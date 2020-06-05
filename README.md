@@ -1,6 +1,6 @@
 # tower_client
 
-Small PC (currently Asus Tinker Board on ARMv7) for reading data from several sonic anemometers on a Tower. The PC suppose to measure all types of sensors in the future.
+The settings of Small PC (currently Asus Tinker Board on ARMv7) for reading data from several sonic anemometers on a Tower. Also scripts for reading and sending the data and some system info to the server.
 
 ## Crontab settings:
 ```bash
