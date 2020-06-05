@@ -4,8 +4,8 @@ The settings of Small PC (currently Asus Tinker Board on ARMv7) for reading data
 
 ## Crontab settings:
 ```bash
-*/1 * * * * /home/gavr/TowerMSU/hb_client.sh >/dev/null 2>&1
-*/30 * * * * /home/gavr/TowerMSU/send_data.sh >/dev/null 2>&1
+*/1 * * * *  /path/to/hb_client.sh >/dev/null 2>&1
+*/30 * * * * /path/to/send_data.sh >/dev/null 2>&1
 ```
 
 ## File description:
