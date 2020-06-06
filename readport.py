@@ -1,5 +1,7 @@
 #!/usr/bin/env python3.5
 
+import argparse
+import configparser
 import logging
 import logging.handlers
 import re
@@ -13,18 +15,6 @@ from pathlib import Path
 from queue import Empty
 
 import numpy as np
-
-
-STATION_NAME = "MSU"
-SONIC_NAME = "Test1"
-HOST, PORT = "192.168.192.48", 4001
-
-FILL_VALUE = -999.0
-PACK_LIMIT = 12000  # 12000 = 20*60*10 (10')
-
-BUFSIZE = 1024  # Socket receiver buffer size
-CHECKPOINT = 0  # Number of seconds between updates to the console (use 0 to disable)
-LOG_LEVEL = "INFO"  # Use "DEBUG" to see more messages in the console and the log-files
 
 # A flag that signals the processes to shut down
 shutdown_event = Event()
@@ -44,29 +34,6 @@ def interrupt_handler(sig, frame):
     shutdown_event.set()
 
 
-def configure_logging():
-    """Setup rotated logging to the file and the console
-    """
-    root = logging.getLogger()
-    root.setLevel(LOG_LEVEL)
-
-    log_filename = Path(__file__).with_suffix(".log").name
-
-    # Setup a rotating log file. At most 5 backup copies are kept, less than 10 MB each.
-    handler = logging.handlers.RotatingFileHandler(
-        log_filename, mode="a", maxBytes=1e7, backupCount=5
-    )
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s")
-    handler.setFormatter(formatter)
-    root.addHandler(handler)
-
-    # Setup logging to the console
-    console = logging.StreamHandler()
-    formatter = logging.Formatter("%(message)s")
-    console.setFormatter(formatter)
-    root.addHandler(console)
-
-
 class Checkpoint:
     """Print the number of messages received every "interval" seconds.
     """
@@ -77,7 +44,6 @@ class Checkpoint:
 
         Args:
             interval: print to the console every "interval" seconds.
-                Use 0 to disable the checkpointing functionality.
         """
         self.interval = interval
         self.n_messages = 0
@@ -90,10 +56,6 @@ class Checkpoint:
         Args:
             end_time: Current unix timestamp
         """
-        if self.interval == 0:
-            # Updates are disabled
-            return
-
         self.n_messages += 1
         elapsed = end_time - self.start_time
 
@@ -107,36 +69,69 @@ class Checkpoint:
             self.start_time = time.time()
 
 
-def connect():
+def checkpoint_factory(interval):
+    """Create an instance of the Checkpoint class. If 0 interval is used, avoid all
+    computations altogether.
+
+    Args:
+        interval: print to the console every "interval" seconds.
+            Use 0 to disable the checkpointing functionality.
+
+    Returns:
+        checkpoint: an instantiated Checkpoint object
+    """
+    checkpoint = Checkpoint(interval)
+
+    if interval == 0:
+        # Perform no computations
+        checkpoint.update = lambda x: None
+
+    return checkpoint
+
+
+def connect(host, port):
     """Establish socket connection, retrying if necessary
+
+    Args:
+        host: IP address of the device
+        port: port number to listen to
+
+    Returns:
+        sock, f: a socket handler and an associated file handler for reading line by line
     """
     reconnecting = False
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     while not shutdown_event.is_set():
         try:
-            sock.connect((HOST, PORT))
-            logging.info(
-                "Connected to {}:{}. Receiving device data...".format(HOST, PORT)
-            )
+            if not reconnecting:
+                logging.info(
+                    "Attempting to connect to socket at {}:{}...".format(host, port)
+                )
+                reconnecting = True
+            sock.connect((host, port))
+            logging.info("Connected. Receiving device data...".format(host, port))
             break
         except Exception:
-            if not reconnecting:
-                logging.info("Attempting to connect to socket...")
-                reconnecting = True
             time.sleep(1)
 
-    # Obtain a file hand capable or reading line by line
+    # Obtain a file descriptor capable or reading line by line
     f = sock.makefile(mode="rb")
     return sock, f
 
 
-def listen_device(queue):
+def listen_device(queue, host, port, checkpoint_interval):
     """Receive messages from the device over a TCP socket and queue them
     for parallel processing.
+
+    Args:
+        queue: a multiprocessing queue to send data to
+        host: IP address of the device
+        port: port number to listen to
+        checkpoint_interval: seconds between updates to the console
     """
     # Connect to the device socket
-    sock, f = connect()
+    sock, f = connect(host, port)
 
     def cleanup():
         """Close the socket-associated handles."""
@@ -148,20 +143,22 @@ def listen_device(queue):
             pass
 
     # Initialize message counting and periodical updates to the console
-    checkpoint = Checkpoint(interval=CHECKPOINT)
+    checkpoint = checkpoint_factory(checkpoint_interval)
 
     while not shutdown_event.is_set():
         try:
-            # Read complete messages ending in "\n"
+            # Read complete messages ending in "\n". If a partial message is received,
+            # buffer and wait for the remainder before continuing. If multiple joined
+            # messages are obtained, split them into individual records.
             data = f.readline()
             if not data:
                 raise NoDataException("Empty data received")
         except (OSError, NoDataException) as e:
             logging.warning(e)
-            logging.info("Reconnecting...")
+            logging.info("Reconnecting")
             cleanup()
-            sock, f = connect()
-            checkpoint = Checkpoint(interval=CHECKPOINT)
+            sock, f = connect(host, port)
+            checkpoint = checkpoint_factory(checkpoint_interval)
             continue
 
         # Get the current time for the received message. In a rare event that multiple
@@ -172,14 +169,21 @@ def listen_device(queue):
         # Send the received data and the timestamp to the second process for parsing
         queue.put([data, timestamp], timeout=1)
 
-        # Print the number of messages received every CHECKPOINT seconds
+        # Print the number of messages received every checkpoint_interval seconds
         checkpoint.update(timestamp)
 
     cleanup()
 
 
-def process_data(queue):
+def process_data(queue, fill_value, pack_limit, station_name, sonic_name):
     """Take messages from the queue, parse them and periodically save to disk.
+
+    Args:
+        queue: a multiprocessing queue to read messages from
+        fill_value: a number used instead of real values when parsing fails
+        pack_limit: the total number of records to store on disk at once
+        station_name: a string identificator of the meteo station
+        sonic_name: a string identificator of the device
     """
     # Make sure the target directory exists
     p = Path("./data")
@@ -197,8 +201,8 @@ def process_data(queue):
             continue
 
         try:
-            u, v, w, t = parse(data)
-            # Details below will be printed only when LOG_LEVEL="DEBUG"
+            u, v, w, t = parse(data, fill_value)
+            # Details below will be printed only when log_level="DEBUG"
             logging.debug(
                 "Got u={:+06.2f}, v={:+06.2f}, w={:+06.2f}, t={:+06.2f}".format(
                     u, v, w, t
@@ -213,14 +217,14 @@ def process_data(queue):
         data_list.append([timestamp, u, v, w, t])
 
         # Save the data to disk when the packing limit is reached
-        if len(data_list) == PACK_LIMIT:
+        if len(data_list) == pack_limit:
             # Convert each variable to a separate NumPy vector
             timestamp, u, v, w, t = np.array(data_list).T
 
             # Save to a compressed file with a current timestamp (up to seconds)
             filename = p / "{station_name}_{sonic_name}_{timestr}.npz".format(
-                station_name=STATION_NAME,
-                sonic_name=SONIC_NAME,
+                station_name=station_name,
+                sonic_name=sonic_name,
                 timestr=datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S"),
             )
             np.savez_compressed(filename, time=timestamp, u=u, v=v, w=w, temp=t)
@@ -230,7 +234,7 @@ def process_data(queue):
             data_list = []
 
 
-def parse(data):
+def parse(data, fill_value):
     """Extract the variables u, v, w, t from the binary message.
 
     Ensures the message is complete, i.e. starts with ".Q" and ends with "\r\n",
@@ -239,9 +243,10 @@ def parse(data):
 
     Args:
         data: a binary message received from the device
+        fill_value: a number used instead of real values when parsing fails
 
     Returns:
-        u, v, w, t: extracted float values or FILL_VALUES
+        u, v, w, t: extracted float values or fill_values
 
     Raises:
         IncompleteDataException: when an unrecoverable incomplete message is received.
@@ -262,14 +267,93 @@ def parse(data):
     except (ValueError, AttributeError):
         # If the regex pattern produced no match or there was a type conversion error
         logging.error("Cannot parse message, substituting fill values: {}".format(data))
-        u, v, w, t = [FILL_VALUE] * 4
+        u, v, w, t = [fill_value] * 4
 
     return u, v, w, t
 
 
+def read_cmdline():
+    """Parse the command-line arguments.
+
+    Returns:
+        args: an object with the values of the command-line options
+    """
+    parser = argparse.ArgumentParser(description="Read and save sonic data.")
+    # For better clarity, add a required block in the description
+    required = parser.add_argument_group("required arguments")
+    required.add_argument(
+        "-c", "--config", help="path to the configuration file", required=True,
+    )
+    args = parser.parse_args()
+    return args
+
+
+def load_config(path):
+    """Load the configuration file with correct parameter data types.
+
+    Args:
+        path: filename of the config file
+
+    Returns:
+        conf: a Namespace object with the loaded settings
+    """
+    # Interpolation is used e.g. for expanding the log file name
+    config = configparser.ConfigParser(
+        interpolation=configparser.ExtendedInterpolation()
+    )
+    config.read(path)
+
+    # Flatten the structure and convert the types of the parameters
+    conf = dict(
+        station_name=config.get("device", "station_name"),
+        sonic_name=config.get("device", "sonic_name"),
+        host=config.get("device", "host"),
+        port=config.getint("device", "port"),
+        fill_value=config.getfloat("parser", "fill_value"),
+        pack_limit=config.getint("parser", "pack_limit"),
+        log_level=config.get("logging", "log_level"),
+        log_file=config.get("logging", "log_file"),
+        checkpoint=config.getint("logging", "checkpoint"),
+    )
+
+    # Convert the dictionary to a Namespace object, to enable .attribute access
+    conf = argparse.Namespace(**conf)
+    return conf
+
+
+def configure_logging(log_level, log_file):
+    """Setup rotated logging to the file and the console
+
+    Args:
+        log_level: the threshold for the logging system ("INFO", "DEBUG", etc.)
+        log_file: the filename of the log to write to
+    """
+    root = logging.getLogger()
+    root.setLevel(log_level)
+
+    # Setup a rotating log file. At most 5 backup copies are kept, less than 10 MB each.
+    handler = logging.handlers.RotatingFileHandler(
+        log_file, mode="a", maxBytes=1e7, backupCount=5
+    )
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s")
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
+
+    # Setup simultaneous logging to the console
+    console = logging.StreamHandler()
+    formatter = logging.Formatter("%(message)s")
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+
 def main():
+    # Parse the command-line arguments and load the config file
+    args = read_cmdline()
+    conf = load_config(path=args.config)
+
     # Set up logging to the console and the log-files
-    configure_logging()
+    configure_logging(log_level=conf.log_level, log_file=conf.log_file)
+    logging.info("Logging to the file '{}'".format(conf.log_file))
 
     # Ignore Ctrl-C in subprocesses
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -278,8 +362,25 @@ def main():
     queue = Queue()
 
     # Launch the subprocesses
-    p1 = Process(target=listen_device, args=[queue])
-    p2 = Process(target=process_data, args=[queue])
+    p1 = Process(
+        target=listen_device,
+        kwargs=dict(
+            queue=queue,
+            host=conf.host,
+            port=conf.port,
+            checkpoint_interval=conf.checkpoint,
+        ),
+    )
+    p2 = Process(
+        target=process_data,
+        kwargs=dict(
+            queue=queue,
+            fill_value=conf.fill_value,
+            pack_limit=conf.pack_limit,
+            station_name=conf.station_name,
+            sonic_name=conf.sonic_name,
+        ),
+    )
     p1.start()
     p2.start()
 
