@@ -44,7 +44,6 @@ class Checkpoint:
 
         Args:
             interval: print to the console every "interval" seconds.
-                Use 0 to disable the checkpointing functionality.
         """
         self.interval = interval
         self.n_messages = 0
@@ -57,10 +56,6 @@ class Checkpoint:
         Args:
             end_time: Current unix timestamp
         """
-        if self.interval == 0:
-            # Updates are disabled
-            return
-
         self.n_messages += 1
         elapsed = end_time - self.start_time
 
@@ -72,6 +67,26 @@ class Checkpoint:
             )
             self.n_messages = 0
             self.start_time = time.time()
+
+
+def checkpoint_factory(interval):
+    """Create an instance of the Checkpoint class. If 0 interval is used, avoid all
+    computations altogether.
+
+    Args:
+        interval: print to the console every "interval" seconds.
+            Use 0 to disable the checkpointing functionality.
+
+    Returns:
+        checkpoint: an instantiated Checkpoint object
+    """
+    checkpoint = Checkpoint(interval)
+
+    if interval == 0:
+        # Perform no computations
+        checkpoint.update = lambda x: None
+
+    return checkpoint
 
 
 def connect(host, port):
@@ -128,7 +143,7 @@ def listen_device(queue, host, port, checkpoint_interval):
             pass
 
     # Initialize message counting and periodical updates to the console
-    checkpoint = Checkpoint(interval=checkpoint_interval)
+    checkpoint = checkpoint_factory(checkpoint_interval)
 
     while not shutdown_event.is_set():
         try:
@@ -143,7 +158,7 @@ def listen_device(queue, host, port, checkpoint_interval):
             logging.info("Reconnecting")
             cleanup()
             sock, f = connect(host, port)
-            checkpoint = Checkpoint(interval=checkpoint_interval)
+            checkpoint = checkpoint_factory(checkpoint_interval)
             continue
 
         # Get the current time for the received message. In a rare event that multiple
