@@ -154,7 +154,7 @@ def listen_device(queue, host, port, checkpoint_interval):
         # Send the received data and the timestamp to the second process for parsing
         queue.put([data, timestamp], timeout=1)
 
-        # Print the number of messages received every CHECKPOINT seconds
+        # Print the number of messages received every checkpoint_interval seconds
         checkpoint.update(timestamp)
 
     cleanup()
@@ -187,7 +187,7 @@ def process_data(queue, fill_value, pack_limit, station_name, sonic_name):
 
         try:
             u, v, w, t = parse(data, fill_value)
-            # Details below will be printed only when LOG_LEVEL="DEBUG"
+            # Details below will be printed only when log_level="DEBUG"
             logging.debug(
                 "Got u={:+06.2f}, v={:+06.2f}, w={:+06.2f}, t={:+06.2f}".format(
                     u, v, w, t
@@ -231,7 +231,7 @@ def parse(data, fill_value):
         fill_value: a number used instead of real values when parsing fails
 
     Returns:
-        u, v, w, t: extracted float values or FILL_VALUES
+        u, v, w, t: extracted float values or fill_values
 
     Raises:
         IncompleteDataException: when an unrecoverable incomplete message is received.
@@ -337,7 +337,7 @@ def main():
     conf = load_config(path=args.config)
 
     # Set up logging to the console and the log-files
-    configure_logging(level=conf.log_level, filename=conf.log_file)
+    configure_logging(log_level=conf.log_level, log_file=conf.log_file)
     logging.info("Logging to the file '{}'".format(conf.log_file))
 
     # Ignore Ctrl-C in subprocesses
