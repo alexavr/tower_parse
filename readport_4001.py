@@ -1,12 +1,11 @@
 #!/usr/bin/env python3.5
 
+import logging
+import logging.handlers
 import re
 import signal
 import socket
 import time
-
-import logging
-import logging.handlers
 
 from datetime import datetime
 from multiprocessing import Process, Queue, Event
@@ -46,7 +45,7 @@ def interrupt_handler(sig, frame):
 
 
 def configure_logging():
-    """Setup logging to the file and the console
+    """Setup rotated logging to the file and the console
     """
     root = logging.getLogger()
     root.setLevel(LOG_LEVEL)
@@ -145,7 +144,8 @@ def listen_device(queue):
             f.close()
             sock.close()
         except Exception:
-            logging.warning("File handle or socket already closed")
+            # The socket may already be closed
+            pass
 
     # Initialize message counting and periodical updates to the console
     checkpoint = Checkpoint(interval=CHECKPOINT)
@@ -187,7 +187,6 @@ def process_data(queue):
 
     # Initialize the temporary storage for parsed data
     data_list = []
-    count = 0
 
     # Loop until a shutdown flag is set and all items in the queue have been received
     while not (shutdown_event.is_set() and queue.empty()):
@@ -212,10 +211,9 @@ def process_data(queue):
 
         # Collect the parsed data
         data_list.append([timestamp, u, v, w, t])
-        count += 1
 
         # Save the data to disk when the packing limit is reached
-        if count == PACK_LIMIT:
+        if len(data_list) == PACK_LIMIT:
             # Convert each variable to a separate NumPy vector
             timestamp, u, v, w, t = np.array(data_list).T
 
@@ -230,11 +228,10 @@ def process_data(queue):
 
             # Reset the in-memory storage
             data_list = []
-            count = 0
 
 
 def parse(data):
-    """Extract the variabls u, v, w, t from the binary message.
+    """Extract the variables u, v, w, t from the binary message.
 
     Ensures the message is complete, i.e. starts with ".Q" and ends with "\r\n",
     otherwise raises an exception. If unable to extract variables from a complete
@@ -247,8 +244,8 @@ def parse(data):
         u, v, w, t: extracted float values or FILL_VALUES
 
     Raises:
-        IncompleteDataException: if an unrecoverable incomplete message is received.
-            In thise case, it doesn't make sense to use fill values for u, v, w, t.
+        IncompleteDataException: when an unrecoverable incomplete message is received.
+            In this case, it doesn't make sense to use fill values for u, v, w, t.
     """
     # Test whether a complete message has been received
     pattern = rb"^\x02Q,.*,\x03..\r\n$"
@@ -298,4 +295,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
