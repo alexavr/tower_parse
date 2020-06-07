@@ -316,7 +316,12 @@ def load_config(path):
     config = configparser.ConfigParser(
         interpolation=configparser.ExtendedInterpolation()
     )
-    config.read(path)
+    try:
+        with open(path) as f:
+            config.read_file(f)
+    except Exception as e:
+        print(e)
+        sys.exit(1)
 
     # Flatten the structure and convert the types of the parameters
     conf = dict(
