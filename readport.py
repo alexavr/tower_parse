@@ -319,7 +319,7 @@ def load_config(path):
         with open(path) as f:
             config.read_file(f)
     except Exception as e:
-        print(e)
+        logging.error(e)
         sys.exit(1)
 
     # Flatten the structure and convert the types of the parameters
