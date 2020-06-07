@@ -20,15 +20,6 @@ import numpy as np
 # A flag that signals the processes to shut down
 shutdown_event = Event()
 
-
-class NoDataException(Exception):
-    """A custom exception thrown when an empty message is received"""
-
-
-class IncompleteDataException(Exception):
-    """A custom exception signifying an incomplete message received"""
-
-
 # A list of subprocesses
 processes = []
 
@@ -47,6 +38,14 @@ def signal_handler(sig, frame):
             "Exiting gracefully... Press Ctrl-C again to terminate immediately."
         )
         shutdown_event.set()
+
+
+class NoDataException(Exception):
+    """A custom exception thrown when an empty message is received"""
+
+
+class IncompleteDataException(Exception):
+    """A custom exception signifying an incomplete message received"""
 
 
 class Checkpoint:
