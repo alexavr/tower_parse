@@ -7,6 +7,7 @@ import logging.handlers
 import re
 import signal
 import socket
+import sys
 import time
 
 from datetime import datetime
@@ -28,10 +29,24 @@ class IncompleteDataException(Exception):
     """A custom exception signifying an incomplete message received"""
 
 
-def interrupt_handler(sig, frame):
-    """A handler for the Ctrl-C event."""
-    logging.info("Exiting gracefully...")
-    shutdown_event.set()
+# A list of subprocesses
+processes = []
+
+
+def signal_handler(sig, frame):
+    """A handler for the Ctrl-C event and the TERM signal."""
+    if shutdown_event.is_set() or sig == signal.SIGTERM:
+        # Terminate immediately
+        logging.info("Terminating")
+        for p in processes:
+            p.terminate()
+        sys.exit(1)
+    else:
+        # Set the shutdown flag
+        logging.info(
+            "Exiting gracefully... Press Ctrl-C again to terminate immediately."
+        )
+        shutdown_event.set()
 
 
 class Checkpoint:
@@ -381,11 +396,14 @@ def main():
             sonic_name=conf.sonic_name,
         ),
     )
+    global processes
+    processes = [p1, p2]
     p1.start()
     p2.start()
 
-    # Gracefully handle Ctrl-C
-    signal.signal(signal.SIGINT, interrupt_handler)
+    # Gracefully handle Ctrl-C and the TERM signal
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     # Wait for the subprocesses to complete
     p1.join()
