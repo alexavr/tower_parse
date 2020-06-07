@@ -11,7 +11,7 @@ The settings of a Small PC (currently Asus Tinker Board on ARMv7) for reading da
 ## File description:
 * `hb_client.sh` - reads system status (CPU temperature, RAM usage, Traffic etc) and sends it to TowerServer.
 * `readport.py` - reads sonic data. 4001-4004 are Ethernet ports on MOXA, supplied through the corresponding configuration files. Currently operational.
-* `readport_400N.conf`: the configuration files for each sonic device. Only the port numbers differ at the moment.
+* `readport_400N.conf`: the configuration files for each sonic device. The sonic names and port numbers differ at the moment.
 * `extras/readport_400N_light.py` - a CPU-lightweight version of `readport.py`: no data accumulation, only saving timestamps in binary format (instead on .npz). Aimed to check script performance and system stability.
 * `extras/readport_400N_format.py` - reads 3 messages from the device and saves them in binary file. Aimed to check the message format, delimiter bits, etc.
 * `extras/readport_400N_firstGavr.py` - the first (read old) version of `readport_400N.py` (not needed).
