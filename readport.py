@@ -46,8 +46,8 @@ class NoDataException(Exception):
     """A custom exception thrown when an empty message is received"""
 
 
-class IncompleteDataException(Exception):
-    """A custom exception signifying an incomplete message received"""
+class ParseError(Exception):
+    """A custom exception signifying a parsing error"""
 
 
 class Checkpoint:
@@ -60,9 +60,11 @@ class Checkpoint:
 
         Args:
             interval: print to the console every "interval" seconds.
+                 Use 0 to disable printing.
         """
         self.interval = interval
         self.n_messages = 0
+        self.fresh_connection = True
         self.start_time = time.time()
 
     def update(self, end_time):
@@ -72,6 +74,12 @@ class Checkpoint:
         Args:
             end_time: Current unix timestamp
         """
+        self.fresh_connection = False
+
+        if self.interval == 0:
+            # Do nothing
+            return
+
         self.n_messages += 1
         elapsed = end_time - self.start_time
 
@@ -83,26 +91,6 @@ class Checkpoint:
             )
             self.n_messages = 0
             self.start_time = time.time()
-
-
-def checkpoint_factory(interval):
-    """Create an instance of the Checkpoint class. If 0 interval is used, avoid all
-    computations altogether.
-
-    Args:
-        interval: print to the console every "interval" seconds.
-            Use 0 to disable the checkpointing functionality.
-
-    Returns:
-        checkpoint: an instantiated Checkpoint object
-    """
-    checkpoint = Checkpoint(interval)
-
-    if interval == 0:
-        # Perform no computations
-        checkpoint.update = lambda x: None
-
-    return checkpoint
 
 
 def connect(host, port):
@@ -157,7 +145,7 @@ def listen_device(queue, conf):
             pass
 
     # Initialize message counting and periodical updates to the console
-    checkpoint = checkpoint_factory(conf.checkpoint_interval)
+    checkpoint = Checkpoint(conf.checkpoint_interval)
 
     while not shutdown_event.is_set():
         try:
@@ -172,7 +160,7 @@ def listen_device(queue, conf):
             logging.info("Reconnecting")
             cleanup()
             sock, f = connect(conf.host, conf.port)
-            checkpoint = checkpoint_factory(conf.checkpoint_interval)
+            checkpoint = Checkpoint(conf.checkpoint_interval)
             continue
 
         # Get the current time for the received message. In a rare event that multiple
@@ -181,7 +169,7 @@ def listen_device(queue, conf):
         timestamp = time.time()
 
         # Send the received data and the timestamp to the second process for parsing
-        queue.put([data, timestamp], timeout=1)
+        queue.put([data, timestamp, checkpoint.fresh_connection], timeout=1)
 
         # Print the number of messages received every checkpoint_interval seconds
         checkpoint.update(timestamp)
@@ -206,7 +194,7 @@ def process_data(queue, conf):
     # Loop until a shutdown flag is set and all items in the queue have been received
     while not (shutdown_event.is_set() and queue.empty()):
         try:
-            data, timestamp = queue.get(timeout=1)
+            data, timestamp, fresh_connection = queue.get(timeout=1)
         except Empty:
             # If the queue is empty, wait for messages that might arrive in the future
             continue
@@ -215,9 +203,14 @@ def process_data(queue, conf):
             variables = parse(data, conf)
             # Details below will be printed only when log_level="DEBUG"
             logging.debug("Got {}".format(dict(variables)))
-        except IncompleteDataException:
-            # Completely skip incomplete messages (e.g. the very first message received
-            # upon the start of the script)
+        except ParseError:
+            # The regex pattern produced no match or there was a type conversion error.
+            if fresh_connection:
+                # We expect the very first message received upon establishing
+                # a connection to be often incomplete.
+                logging.debug("Possibly incomplete first message: {}".format(data))
+            else:
+                logging.error("Cannot parse message: {}".format(data))
             continue
 
         # Collect the parsed data, saving only the values
@@ -245,10 +238,6 @@ def process_data(queue, conf):
 def parse(data, conf):
     """Extract the variables from the binary message.
 
-    Ensures the message is complete, e.g. starts with "M:" and ends with "\r\n",
-    otherwise raises an exception. If unable to extract variables from a complete
-    message, uses fill values and logs the event.
-
     Args:
         data: a binary message received from the device
         conf: a configuration Namespace object
@@ -257,23 +246,15 @@ def parse(data, conf):
         variables: a dictionary of extracted float values or fill_values
 
     Raises:
-        IncompleteDataException: when an unrecoverable incomplete message is received.
-            In this case, it doesn't make sense to use fill values.
+        ParseError: unable to parse a message due to issues with regex matching
+        (including a possible incomplete message received) or failed conversion to float.
     """
-    # Test whether a complete message has been received
-    match = re.match(conf.bounds_regex, data)
-    if not match:
-        logging.warning("Incomplete message received, skipping: {}".format(data))
-        raise IncompleteDataException("Incomplete message received")
-
     # Extract the values from the message
     try:
-        match = re.match(conf.extract_regex, data)
+        match = re.match(conf.regex, data)
         values = [float(value) * conf.multiplier for value in match.groups()]
     except (ValueError, AttributeError):
-        # If the regex pattern produced no match or there was a type conversion error
-        logging.error("Cannot parse message, substituting fill values: {}".format(data))
-        values = [conf.fill_value] * len(conf.var_names)
+        raise ParseError
 
     variables = OrderedDict(zip(conf.var_names, values))
 
@@ -327,11 +308,9 @@ def load_config(path):
         sonic_name=config.get("device", "sonic_name"),
         host=config.get("device", "host"),
         port=config.getint("device", "port"),
-        bounds_regex=read_bytes("parser", "bounds_regex"),
-        extract_regex=read_bytes("parser", "extract_regex"),
+        regex=read_bytes("parser", "regex"),
         var_names=config.get("parser", "var_names").split(),
         multiplier=config.getfloat("parser", "multiplier"),
-        fill_value=config.getfloat("parser", "fill_value"),
         pack_limit=config.getint("parser", "pack_limit"),
         log_level=config.get("logging", "log_level"),
         log_file=config.get("logging", "log_file"),
@@ -341,11 +320,11 @@ def load_config(path):
     # Convert the dictionary to a Namespace object, to enable .attribute access
     conf = argparse.Namespace(**conf)
 
-    # Ensure that "time" isn't used as a variable name in the config file
+    # Ensure that "time" isn't used as a var_name in the config file
     if "time" in conf.var_names:
         logging.error(
-            "Please don't use 'time' among var_names in the config file. "
-            "Pick a different name for that variable."
+            "Don't use 'time' among var_names in the config file. "
+            "It is reserved for the message timestamp."
         )
         sys.exit(1)
 
