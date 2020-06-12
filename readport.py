@@ -10,6 +10,8 @@ import socket
 import sys
 import time
 
+from ast import literal_eval
+from collections import OrderedDict
 from datetime import datetime
 from multiprocessing import Process, Queue, Event
 from pathlib import Path
@@ -44,8 +46,8 @@ class NoDataException(Exception):
     """A custom exception thrown when an empty message is received"""
 
 
-class IncompleteDataException(Exception):
-    """A custom exception signifying an incomplete message received"""
+class ParseError(Exception):
+    """A custom exception signifying a parsing error"""
 
 
 class Checkpoint:
@@ -58,9 +60,11 @@ class Checkpoint:
 
         Args:
             interval: print to the console every "interval" seconds.
+                 Use 0 to disable printing.
         """
         self.interval = interval
         self.n_messages = 0
+        self.fresh_connection = True
         self.start_time = time.time()
 
     def update(self, end_time):
@@ -70,6 +74,12 @@ class Checkpoint:
         Args:
             end_time: Current unix timestamp
         """
+        self.fresh_connection = False
+
+        if self.interval == 0:
+            # Do nothing
+            return
+
         self.n_messages += 1
         elapsed = end_time - self.start_time
 
@@ -81,26 +91,6 @@ class Checkpoint:
             )
             self.n_messages = 0
             self.start_time = time.time()
-
-
-def checkpoint_factory(interval):
-    """Create an instance of the Checkpoint class. If 0 interval is used, avoid all
-    computations altogether.
-
-    Args:
-        interval: print to the console every "interval" seconds.
-            Use 0 to disable the checkpointing functionality.
-
-    Returns:
-        checkpoint: an instantiated Checkpoint object
-    """
-    checkpoint = Checkpoint(interval)
-
-    if interval == 0:
-        # Perform no computations
-        checkpoint.update = lambda x: None
-
-    return checkpoint
 
 
 def connect(host, port):
@@ -134,18 +124,16 @@ def connect(host, port):
     return sock, f
 
 
-def listen_device(queue, host, port, checkpoint_interval):
+def listen_device(queue, conf):
     """Receive messages from the device over a TCP socket and queue them
     for parallel processing.
 
     Args:
         queue: a multiprocessing queue to send data to
-        host: IP address of the device
-        port: port number to listen to
-        checkpoint_interval: seconds between updates to the console
+        conf: a configuration Namespace object
     """
     # Connect to the device socket
-    sock, f = connect(host, port)
+    sock, f = connect(conf.host, conf.port)
 
     def cleanup():
         """Close the socket-associated handles."""
@@ -157,7 +145,7 @@ def listen_device(queue, host, port, checkpoint_interval):
             pass
 
     # Initialize message counting and periodical updates to the console
-    checkpoint = checkpoint_factory(checkpoint_interval)
+    checkpoint = Checkpoint(conf.checkpoint_interval)
 
     while not shutdown_event.is_set():
         try:
@@ -171,8 +159,8 @@ def listen_device(queue, host, port, checkpoint_interval):
             logging.warning(e)
             logging.info("Reconnecting")
             cleanup()
-            sock, f = connect(host, port)
-            checkpoint = checkpoint_factory(checkpoint_interval)
+            sock, f = connect(conf.host, conf.port)
+            checkpoint = Checkpoint(conf.checkpoint_interval)
             continue
 
         # Get the current time for the received message. In a rare event that multiple
@@ -181,7 +169,7 @@ def listen_device(queue, host, port, checkpoint_interval):
         timestamp = time.time()
 
         # Send the received data and the timestamp to the second process for parsing
-        queue.put([data, timestamp], timeout=1)
+        queue.put([data, timestamp, checkpoint.fresh_connection], timeout=1)
 
         # Print the number of messages received every checkpoint_interval seconds
         checkpoint.update(timestamp)
@@ -189,15 +177,12 @@ def listen_device(queue, host, port, checkpoint_interval):
     cleanup()
 
 
-def process_data(queue, fill_value, pack_limit, station_name, sonic_name):
+def process_data(queue, conf):
     """Take messages from the queue, parse them and periodically save to disk.
 
     Args:
         queue: a multiprocessing queue to read messages from
-        fill_value: a number used instead of real values when parsing fails
-        pack_limit: the total number of records to store on disk at once
-        station_name: a string identificator of the meteo station
-        sonic_name: a string identificator of the device
+        conf: a configuration Namespace object
     """
     # Make sure the target directory exists
     p = Path("./data")
@@ -209,81 +194,71 @@ def process_data(queue, fill_value, pack_limit, station_name, sonic_name):
     # Loop until a shutdown flag is set and all items in the queue have been received
     while not (shutdown_event.is_set() and queue.empty()):
         try:
-            data, timestamp = queue.get(timeout=1)
+            data, timestamp, fresh_connection = queue.get(timeout=1)
         except Empty:
             # If the queue is empty, wait for messages that might arrive in the future
             continue
 
         try:
-            u, v, w, t = parse(data, fill_value)
+            variables = parse(data, conf)
             # Details below will be printed only when log_level="DEBUG"
-            logging.debug(
-                "Got u={:+06.2f}, v={:+06.2f}, w={:+06.2f}, t={:+06.2f}".format(
-                    u, v, w, t
-                )
-            )
-        except IncompleteDataException:
-            # Completely skip incomplete messages (e.g. the very first message received
-            # upon the start of the script)
+            logging.debug("Got {}".format(dict(variables)))
+        except ParseError:
+            # The regex pattern produced no match or there was a type conversion error.
+            if fresh_connection:
+                # We expect the very first message received upon establishing
+                # a connection to be often incomplete.
+                logging.debug("Possibly incomplete first message: {}".format(data))
+            else:
+                logging.error("Cannot parse message: {}".format(data))
             continue
 
-        # Collect the parsed data
-        data_list.append([timestamp, u, v, w, t])
+        # Collect the parsed data, saving only the values
+        variables["time"] = timestamp
+        data_list.append(tuple(variables.values()))
 
         # Save the data to disk when the packing limit is reached
-        if len(data_list) == pack_limit:
+        if len(data_list) == conf.pack_limit:
             # Convert each variable to a separate NumPy vector
-            timestamp, u, v, w, t = np.array(data_list).T
+            vectors = OrderedDict(zip(variables.keys(), np.array(data_list).T))
 
             # Save to a compressed file with a current timestamp (up to seconds)
             filename = p / "{station_name}_{sonic_name}_{timestr}.npz".format(
-                station_name=station_name,
-                sonic_name=sonic_name,
+                station_name=conf.station_name,
+                sonic_name=conf.sonic_name,
                 timestr=datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S"),
             )
-            np.savez_compressed(filename, time=timestamp, u=u, v=v, w=w, temp=t)
+            np.savez_compressed(filename, **vectors)
             logging.info("Data saved to '{}'".format(filename))
 
             # Reset the in-memory storage
             data_list = []
 
 
-def parse(data, fill_value):
-    """Extract the variables u, v, w, t from the binary message.
-
-    Ensures the message is complete, i.e. starts with ".Q" and ends with "\r\n",
-    otherwise raises an exception. If unable to extract variables from a complete
-    message, uses fill values for u, v, w, t and logs the event.
+def parse(data, conf):
+    """Extract the variables from the binary message.
 
     Args:
         data: a binary message received from the device
-        fill_value: a number used instead of real values when parsing fails
+        conf: a configuration Namespace object
 
     Returns:
-        u, v, w, t: extracted float values or fill_values
+        variables: a dictionary of extracted float values or fill_values
 
     Raises:
-        IncompleteDataException: when an unrecoverable incomplete message is received.
-            In this case, it doesn't make sense to use fill values for u, v, w, t.
+        ParseError: unable to parse a message due to issues with regex matching
+        (including a possible incomplete message received) or failed conversion to float.
     """
-    # Test whether a complete message has been received
-    pattern = rb"^\x02Q,.*,\x03..\r\n$"
-    match = re.match(pattern, data)
-    if not match:
-        logging.warning("Incomplete message received, skipping: {}".format(data))
-        raise IncompleteDataException("Incomplete message received")
-
-    # Extract the floating point values from message
-    pattern = rb"^.+,([^,]+),([^,]+),([^,]+),.,([^,]+),([^,]+),([^,]+)$"
+    # Extract the values from the message
     try:
-        match = re.match(pattern, data)
-        u, v, w, t = [float(value) for value in match.group(1, 2, 3, 4)]
+        match = re.match(conf.regex, data)
+        values = [float(value) * conf.multiplier for value in match.groups()]
     except (ValueError, AttributeError):
-        # If the regex pattern produced no match or there was a type conversion error
-        logging.error("Cannot parse message, substituting fill values: {}".format(data))
-        u, v, w, t = [fill_value] * 4
+        raise ParseError
 
-    return u, v, w, t
+    variables = OrderedDict(zip(conf.var_names, values))
+
+    return variables
 
 
 def read_cmdline():
@@ -322,21 +297,37 @@ def load_config(path):
         logging.error(e)
         sys.exit(1)
 
+    def read_bytes(section, option):
+        """Read an option from the config file as bytes"""
+        value = config.get(section, option, raw=True)
+        return literal_eval("b'{}'".format(value))
+
     # Flatten the structure and convert the types of the parameters
     conf = dict(
         station_name=config.get("device", "station_name"),
         sonic_name=config.get("device", "sonic_name"),
         host=config.get("device", "host"),
         port=config.getint("device", "port"),
-        fill_value=config.getfloat("parser", "fill_value"),
+        regex=read_bytes("parser", "regex"),
+        var_names=config.get("parser", "var_names").split(),
+        multiplier=config.getfloat("parser", "multiplier"),
         pack_limit=config.getint("parser", "pack_limit"),
         log_level=config.get("logging", "log_level"),
         log_file=config.get("logging", "log_file"),
-        checkpoint=config.getint("logging", "checkpoint"),
+        checkpoint_interval=config.getint("logging", "checkpoint_interval"),
     )
 
     # Convert the dictionary to a Namespace object, to enable .attribute access
     conf = argparse.Namespace(**conf)
+
+    # Ensure that "time" isn't used as a var_name in the config file
+    if "time" in conf.var_names:
+        logging.error(
+            "Don't use 'time' among var_names in the config file. "
+            "It is reserved for the message timestamp."
+        )
+        sys.exit(1)
+
     return conf
 
 
@@ -381,25 +372,8 @@ def main():
     queue = Queue()
 
     # Launch the subprocesses
-    p1 = Process(
-        target=listen_device,
-        kwargs=dict(
-            queue=queue,
-            host=conf.host,
-            port=conf.port,
-            checkpoint_interval=conf.checkpoint,
-        ),
-    )
-    p2 = Process(
-        target=process_data,
-        kwargs=dict(
-            queue=queue,
-            fill_value=conf.fill_value,
-            pack_limit=conf.pack_limit,
-            station_name=conf.station_name,
-            sonic_name=conf.sonic_name,
-        ),
-    )
+    p1 = Process(target=listen_device, kwargs=dict(queue=queue, conf=conf))
+    p2 = Process(target=process_data, kwargs=dict(queue=queue, conf=conf))
     global processes
     processes = [p1, p2]
     p1.start()
