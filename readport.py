@@ -159,12 +159,14 @@ def listen_device(queue, conf):
             if not data:
                 raise NoDataException("Empty data received")
         except (OSError, NoDataException) as e:
-            if isinstance(e, socket.timeout):
-                # Make the error message more specific instead of the default "timed out"
-                e = "Read timed out. No messages received in {} seconds.".format(
-                    conf.timeout
-                )
-            logging.warning(e)
+            if isinstance(e, NoDataException):
+                logging.warning(e)
+            else:
+                if isinstance(e, socket.timeout):
+                    e = "Read timed out. No messages received in {} seconds.".format(
+                        conf.timeout
+                    )
+                logging.error(e)
 
             if shutdown_event.is_set():
                 continue
