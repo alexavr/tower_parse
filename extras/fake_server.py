@@ -80,7 +80,7 @@ def read_cmdline():
             "Use 0 to send at a maximum possible rate."
         ),
         default=20,
-        type=int,
+        type=float,
     )
     parser.add_argument(
         "-b",
