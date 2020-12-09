@@ -114,7 +114,9 @@ def connect(host, port):
                 )
                 reconnecting = True
             sock.connect((host, port))
-            logging.info("Connected. Receiving device data...".format(host, port))
+            logging.info(
+                "Connected to {}:{}. Receiving device data...".format(host, port)
+            )
             break
         except Exception:
             time.sleep(1)
