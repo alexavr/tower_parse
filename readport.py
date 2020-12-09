@@ -93,7 +93,7 @@ class Checkpoint:
             self.start_time = time.time()
 
 
-def connect(host, port):
+def connect(host, port, timeout):
     """Establish socket connection, retrying if necessary
 
     Args:
@@ -113,6 +113,7 @@ def connect(host, port):
                     "Attempting to connect to socket at {}:{}...".format(host, port)
                 )
                 reconnecting = True
+            sock.settimeout(timeout)
             sock.connect((host, port))
             logging.info(
                 "Connected to {}:{}. Receiving device data...".format(host, port)
@@ -135,7 +136,7 @@ def listen_device(queue, conf):
         conf: a configuration Namespace object
     """
     # Connect to the device socket
-    sock, f = connect(conf.host, conf.port)
+    sock, f = connect(conf.host, conf.port, conf.timeout)
 
     def cleanup():
         """Close the socket-associated handles."""
@@ -158,10 +159,18 @@ def listen_device(queue, conf):
             if not data:
                 raise NoDataException("Empty data received")
         except (OSError, NoDataException) as e:
+            if isinstance(e, socket.timeout):
+                # Make the error message more specific instead of the default "timed out"
+                e = "Read timed out. No messages received in {} seconds.".format(
+                    conf.timeout
+                )
             logging.warning(e)
+
+            if shutdown_event.is_set():
+                continue
             logging.info("Reconnecting")
             cleanup()
-            sock, f = connect(conf.host, conf.port)
+            sock, f = connect(conf.host, conf.port, conf.timeout)
             checkpoint = Checkpoint(conf.checkpoint_interval)
             continue
 
@@ -314,6 +323,7 @@ def load_config(path):
         var_names=config.get("parser", "var_names").split(),
         multiplier=config.getfloat("parser", "multiplier"),
         pack_limit=config.getint("parser", "pack_limit"),
+        timeout=config.getint("parser", "timeout"),
         log_level=config.get("logging", "log_level"),
         log_file=config.get("logging", "log_file"),
         checkpoint_interval=config.getint("logging", "checkpoint_interval"),
