@@ -93,12 +93,13 @@ class Checkpoint:
             self.start_time = time.time()
 
 
-def connect(host, port, timeout):
+def connect(host, port, timeout=None):
     """Establish socket connection, retrying if necessary
 
     Args:
         host: IP address of the device
         port: port number to listen to
+        timeout: a timeout in seconds for connecting and reading data (default: None)
 
     Returns:
         sock, f: a socket handler and an associated file handler for reading line by line
@@ -325,7 +326,7 @@ def load_config(path):
         var_names=config.get("parser", "var_names").split(),
         multiplier=config.getfloat("parser", "multiplier"),
         pack_limit=config.getint("parser", "pack_limit"),
-        timeout=config.getint("parser", "timeout"),
+        timeout=config.getint("parser", "timeout", fallback=None),
         log_level=config.get("logging", "log_level"),
         log_file=config.get("logging", "log_file"),
         checkpoint_interval=config.getint("logging", "checkpoint_interval"),
@@ -341,6 +342,10 @@ def load_config(path):
             "It is reserved for the message timestamp."
         )
         sys.exit(1)
+
+    # Handle timeout=0 as None, which sets the socket in blocking mode without timeouts
+    if conf.timeout == 0:
+        conf.timeout = None
 
     return conf
 
