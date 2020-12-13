@@ -237,9 +237,9 @@ def process_data(queue, conf):
             vectors = OrderedDict(zip(variables.keys(), np.array(data_list).T))
 
             # Save to a compressed file with a current timestamp (up to seconds)
-            filename = p / "{station_name}_{sonic_name}_{timestr}.npz".format(
+            filename = p / "{station_name}_{device_name}_{timestr}.npz".format(
                 station_name=conf.station_name,
-                sonic_name=conf.sonic_name,
+                device_name=conf.device_name,
                 timestr=datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S"),
             )
             np.savez_compressed(filename, **vectors)
@@ -319,7 +319,7 @@ def load_config(path):
     # Flatten the structure and convert the types of the parameters
     conf = dict(
         station_name=config.get("device", "station_name"),
-        sonic_name=config.get("device", "sonic_name"),
+        device_name=config.get("device", "device_name"),
         host=config.get("device", "host"),
         port=config.getint("device", "port"),
         regex=read_bytes("parser", "regex"),
