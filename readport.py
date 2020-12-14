@@ -20,7 +20,7 @@ from queue import Empty
 import numpy as np
 
 # A flag that signals the processes to shut down
-shutdown_event = Event()
+shutdown = Event()
 
 # A list of subprocesses
 processes = []
@@ -28,7 +28,7 @@ processes = []
 
 def signal_handler(sig, frame):
     """A handler for the Ctrl-C event and the TERM signal."""
-    if shutdown_event.is_set() or sig == signal.SIGTERM:
+    if shutdown.is_set() or sig == signal.SIGTERM:
         # Terminate immediately
         logging.info("Terminating")
         for p in processes:
@@ -39,93 +39,116 @@ def signal_handler(sig, frame):
         logging.info(
             "Exiting gracefully... Press Ctrl-C again to terminate immediately."
         )
-        shutdown_event.set()
-
-
-class NoDataException(Exception):
-    """A custom exception thrown when an empty message is received"""
+        shutdown.set()
 
 
 class ParseError(Exception):
     """A custom exception signifying a parsing error"""
 
 
-class Checkpoint:
-    """Print the number of messages received every "interval" seconds.
-    """
+class TCPClient:
+    """A TCP socket connection that reads newline-delimited messages."""
 
-    def __init__(self, interval):
-        """Initialize the class using the current system time and
-        a checkpoint interval in seconds.
+    def __init__(self, host, port, timeout=None):
+        """Initialize the socket connection class.
 
         Args:
-            interval: print to the console every "interval" seconds.
-                 Use 0 to disable printing.
+            host: IP address of the device
+            port: integer port number to listen to
+            timeout: a timeout in seconds for connecting and reading data (default: None)
         """
-        self.interval = interval
-        self.n_messages = 0
-        self.fresh_connection = True
-        self.start_time = time.time()
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self._sock = None
+        self._fd = None
+        self._fresh = None
 
-    def update(self, end_time):
-        """Increment the number of messages received and print to the console
-        if "interval" seconds have elapsed.
+    def __enter__(self):
+        return self
 
-        Args:
-            end_time: Current unix timestamp
+    def __exit__(self, *exc):
+        self.close()
+
+    @property
+    def fresh(self):
+        """Indicates whether the connection is fresh, i.e. no data has been
+        received over the socket yet.
         """
-        self.fresh_connection = False
+        return self._fresh
 
-        if self.interval == 0:
-            # Do nothing
-            return
+    def connect(self):
+        """Establish socket connection, retrying if necessary"""
+        logging.info(
+            "Attempting to connect to socket at {}:{}...".format(self.host, self.port)
+        )
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-        self.n_messages += 1
-        elapsed = end_time - self.start_time
-
-        if elapsed >= self.interval:
-            logging.info(
-                "Received {:,} messages in {:.1f} seconds".format(
-                    self.n_messages, elapsed
-                )
-            )
-            self.n_messages = 0
-            self.start_time = time.time()
-
-
-def connect(host, port, timeout=None):
-    """Establish socket connection, retrying if necessary
-
-    Args:
-        host: IP address of the device
-        port: port number to listen to
-        timeout: a timeout in seconds for connecting and reading data (default: None)
-
-    Returns:
-        sock, f: a socket handler and an associated file handler for reading line by line
-    """
-    reconnecting = False
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    while not shutdown_event.is_set():
-        try:
-            if not reconnecting:
+        while not shutdown.is_set():
+            try:
+                self._sock.settimeout(self.timeout)
+                self._sock.connect((self.host, self.port))
+                break
+            except OSError:
+                time.sleep(1)
+            else:
                 logging.info(
-                    "Attempting to connect to socket at {}:{}...".format(host, port)
+                    "Connected to {}:{}. Receiving device data...".format(
+                        self.host, self.port
+                    )
                 )
-                reconnecting = True
-            sock.settimeout(timeout)
-            sock.connect((host, port))
-            logging.info(
-                "Connected to {}:{}. Receiving device data...".format(host, port)
-            )
-            break
-        except Exception:
-            time.sleep(1)
 
-    # Obtain a file descriptor capable or reading line by line
-    f = sock.makefile(mode="rb")
-    return sock, f
+        # Obtain a file descriptor capable of reading line by line
+        self._fd = self._sock.makefile(mode="rb")
+        # Mark that the connection has just been created
+        self._fresh = True
+
+    def readline(self):
+        """Read complete messages ending in "\n". If a partial message is received,
+        buffer and wait for the remainder before continuing. If multiple joined
+        messages are obtained, split them into individual records.
+
+        Returns:
+            data: a binary string
+
+        Rases:
+            OSError: propagate errors and empty messages as exceptions. There is no such
+            thing as an empty message in TCP, so zero length means a peer disconnect.
+        """
+        try:
+            data = self._fd.readline()
+            if not data:
+                raise ConnectionResetError("The device has closed the connection")
+        except OSError as e:
+            # The connection is unusable after an error
+            self.close()
+
+            # Make the timeout message more elaborate instead of the default "timed out"
+            if isinstance(e, socket.timeout):
+                e = OSError(
+                    "Read timed out. No messages received in {} seconds.".format(
+                        self.timeout
+                    )
+                )
+            raise e
+
+        # Mark that some data has been successfully received over this connection.
+        self._fresh = False
+
+        return data
+
+    def close(self):
+        """Close all socket-associated handles."""
+        try:
+            if self._fd:
+                self._fd.close()
+                self._fd = None
+            if self._sock:
+                self._sock.close()
+                self._sock = None
+        except OSError:
+            # Ignore possible exceptions raised during close() calls
+            pass
 
 
 def listen_device(queue, conf):
@@ -136,59 +159,29 @@ def listen_device(queue, conf):
         queue: a multiprocessing queue to send data to
         conf: a configuration Namespace object
     """
-    # Connect to the device socket
-    sock, f = connect(conf.host, conf.port, conf.timeout)
+    with TCPClient(conf.host, conf.port, conf.timeout) as client:
+        # Establish socket connection to the device
+        client.connect()
 
-    def cleanup():
-        """Close the socket-associated handles."""
-        try:
-            f.close()
-            sock.close()
-        except Exception:
-            # The socket may already be closed
-            pass
-
-    # Initialize message counting and periodical updates to the console
-    checkpoint = Checkpoint(conf.checkpoint_interval)
-
-    while not shutdown_event.is_set():
-        try:
-            # Read complete messages ending in "\n". If a partial message is received,
-            # buffer and wait for the remainder before continuing. If multiple joined
-            # messages are obtained, split them into individual records.
-            data = f.readline()
-            if not data:
-                raise NoDataException("Empty data received")
-        except (OSError, NoDataException) as e:
-            if isinstance(e, NoDataException):
-                logging.warning(e)
-            else:
-                if isinstance(e, socket.timeout):
-                    e = "Read timed out. No messages received in {} seconds.".format(
-                        conf.timeout
-                    )
+        while not shutdown.is_set():
+            try:
+                # Read device data line by line
+                data = client.readline()
+            except OSError as e:
+                # Log the error and reconnect to the device
                 logging.error(e)
-
-            if shutdown_event.is_set():
+                client.connect()
                 continue
-            logging.info("Reconnecting")
-            cleanup()
-            sock, f = connect(conf.host, conf.port, conf.timeout)
-            checkpoint = Checkpoint(conf.checkpoint_interval)
-            continue
 
-        # Get the current time for the received message. In a rare event that multiple
-        # messages have been received over the socket at once, the timestamps for
-        # individual messages will be very close to each other, but not the same.
-        timestamp = time.time()
+            # Get the current time for the received message. In a rare event that
+            # multiple messages have been received over the socket at once, the
+            # timestamps for individual messages will be very close to each other,
+            # but not the same.
+            timestamp = time.time()
 
-        # Send the received data and the timestamp to the second process for parsing
-        queue.put([data, timestamp, checkpoint.fresh_connection], timeout=1)
-
-        # Print the number of messages received every checkpoint_interval seconds
-        checkpoint.update(timestamp)
-
-    cleanup()
+            # Send the received data, the timestamp, and the connection state to the
+            # second process for parsing
+            queue.put([data, timestamp, client.fresh], timeout=1)
 
 
 def process_data(queue, conf):
@@ -206,7 +199,7 @@ def process_data(queue, conf):
     data_list = []
 
     # Loop until a shutdown flag is set and all items in the queue have been received
-    while not (shutdown_event.is_set() and queue.empty()):
+    while not (shutdown.is_set() and queue.empty()):
         try:
             data, timestamp, fresh_connection = queue.get(timeout=1)
         except Empty:
@@ -215,13 +208,13 @@ def process_data(queue, conf):
 
         try:
             variables = parse(data, conf)
-            # Details below will be printed only when log_level="DEBUG"
+            # Details will be printed only when log_level="DEBUG"
             logging.debug("Got {}".format(dict(variables)))
         except ParseError:
             # The regex pattern produced no match or there was a type conversion error.
             if fresh_connection:
                 # We expect the very first message received upon establishing
-                # a connection to be often incomplete.
+                # a connection to be incomplete quite often.
                 logging.debug("Possibly incomplete first message: {}".format(data))
             else:
                 logging.error("Cannot parse message: {}".format(data))
@@ -329,7 +322,6 @@ def load_config(path):
         timeout=config.getint("parser", "timeout", fallback=None),
         log_level=config.get("logging", "log_level"),
         log_file=config.get("logging", "log_file"),
-        checkpoint_interval=config.getint("logging", "checkpoint_interval"),
     )
 
     # Convert the dictionary to a Namespace object, to enable .attribute access
