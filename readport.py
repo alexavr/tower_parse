@@ -89,7 +89,7 @@ class TCPClient:
                 self._sock.settimeout(self.timeout)
                 self._sock.connect((self.host, self.port))
                 break
-            except OSError:
+            except Exception:
                 time.sleep(1)
             else:
                 logging.info(
@@ -119,7 +119,7 @@ class TCPClient:
             data = self._fd.readline()
             if not data:
                 raise ConnectionResetError("The device has closed the connection")
-        except OSError as e:
+        except Exception as e:
             # The connection is unusable after an error
             self.close()
 
@@ -146,7 +146,7 @@ class TCPClient:
             if self._sock:
                 self._sock.close()
                 self._sock = None
-        except OSError:
+        except Exception:
             # Ignore possible exceptions raised during close() calls
             pass
 
@@ -167,7 +167,7 @@ def listen_device(queue, conf):
             try:
                 # Read device data line by line
                 data = client.readline()
-            except OSError as e:
+            except Exception as e:
                 # Log the error and reconnect to the device
                 logging.error(e)
                 client.connect()
