@@ -78,17 +78,20 @@ class TCPClient:
         return self._fresh
 
     def connect(self):
-        """Establish socket connection, retrying if necessary"""
+        """Establish socket connection, retrying if necessary
+        """
+        # Close any previously open socket-associated file descriptors
+        self.close()
+
         logging.info(
             "Attempting to connect to socket at {}:{}...".format(self.host, self.port)
         )
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.settimeout(self.timeout)
 
         while not shutdown.is_set():
             try:
-                self._sock.settimeout(self.timeout)
                 self._sock.connect((self.host, self.port))
-                break
             except Exception:
                 time.sleep(1)
             else:
@@ -97,11 +100,13 @@ class TCPClient:
                         self.host, self.port
                     )
                 )
+                # Obtain a file descriptor capable of reading line by line
+                self._fd = self._sock.makefile(mode="rb")
+                # Mark that the connection has just been created
+                self._fresh = True
+                return
 
-        # Obtain a file descriptor capable of reading line by line
-        self._fd = self._sock.makefile(mode="rb")
-        # Mark that the connection has just been created
-        self._fresh = True
+        # Shutting down before connection could be established
 
     def readline(self):
         """Read complete messages ending in "\n". If a partial message is received,
@@ -120,9 +125,6 @@ class TCPClient:
             if not data:
                 raise ConnectionResetError("The device has closed the connection")
         except Exception as e:
-            # The connection is unusable after an error
-            self.close()
-
             # Make the timeout message more elaborate instead of the default "timed out"
             if isinstance(e, socket.timeout):
                 e = OSError(
@@ -142,13 +144,14 @@ class TCPClient:
         try:
             if self._fd:
                 self._fd.close()
-                self._fd = None
             if self._sock:
+                self._sock.shutdown(socket.SHUT_RDWR)
                 self._sock.close()
-                self._sock = None
         except Exception:
-            # Ignore possible exceptions raised during close() calls
             pass
+
+        self._fd = None
+        self._sock = None
 
 
 def listen_device(queue, conf):
