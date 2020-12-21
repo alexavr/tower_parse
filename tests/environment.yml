@@ -1,0 +1,11 @@
+name: tower_client
+channels:
+  - defaults
+dependencies:
+  # Python 3.5 is used in production (ASUS Tinker Board)
+  - python=3.5
+  - numpy
+  - pip
+  - pip:
+    # pip has the latest pytest supporting Python 3.5
+    - pytest

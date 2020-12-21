@@ -154,15 +154,17 @@ class TCPClient:
         self._sock = None
 
 
-def listen_device(queue, conf):
+def listen_device(queue, host, port, timeout):
     """Receive messages from the device over a TCP socket and queue them
     for parallel processing.
 
     Args:
         queue: a multiprocessing queue to send data to
-        conf: a configuration Namespace object
+        host: IP address of the device
+        port: integer port number to listen to
+        timeout: a timeout in seconds for connecting and reading data (default: None)
     """
-    with TCPClient(conf.host, conf.port, conf.timeout) as client:
+    with TCPClient(host, port, timeout) as client:
         # Establish socket connection to the device
         client.connect()
 
@@ -386,7 +388,10 @@ def main():
     queue = Queue()
 
     # Launch the subprocesses
-    p1 = Process(target=listen_device, kwargs=dict(queue=queue, conf=conf))
+    p1 = Process(
+        target=listen_device,
+        kwargs=dict(queue=queue, host=conf.host, port=conf.port, timeout=conf.timeout),
+    )
     p2 = Process(target=process_data, kwargs=dict(queue=queue, conf=conf))
     global processes
     processes = [p1, p2]
