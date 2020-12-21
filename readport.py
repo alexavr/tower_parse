@@ -11,11 +11,11 @@ import sys
 import time
 
 from ast import literal_eval
-from collections import OrderedDict
+from collections import namedtuple, OrderedDict
 from datetime import datetime
 from multiprocessing import Process, Queue, Event
 from pathlib import Path
-from queue import Empty
+from queue import Empty, Full
 
 import numpy as np
 
@@ -24,6 +24,13 @@ shutdown = Event()
 
 # A list of subprocesses
 processes = []
+
+# A data structure passed between processes
+Item = namedtuple("Item", ["data", "timestamp", "fresh_connection"])
+
+
+class ParseError(Exception):
+    """A custom exception signifying a parsing error"""
 
 
 def signal_handler(sig, frame):
@@ -40,10 +47,6 @@ def signal_handler(sig, frame):
             "Exiting gracefully... Press Ctrl-C again to terminate immediately."
         )
         shutdown.set()
-
-
-class ParseError(Exception):
-    """A custom exception signifying a parsing error"""
 
 
 class TCPClient:
@@ -96,7 +99,7 @@ class TCPClient:
                 time.sleep(1)
             else:
                 logging.info(
-                    "Connected to {}:{}. Receiving device data...".format(
+                    "Connected to {}:{}. Ready to receive device data...".format(
                         self.host, self.port
                     )
                 )
@@ -170,6 +173,7 @@ def listen_device(queue, host, port, timeout):
 
         while not shutdown.is_set():
             try:
+                fresh_connection = client.fresh
                 # Read device data line by line
                 data = client.readline()
             except Exception as e:
@@ -186,7 +190,14 @@ def listen_device(queue, host, port, timeout):
 
             # Send the received data, the timestamp, and the connection state to the
             # second process for parsing
-            queue.put([data, timestamp, client.fresh], timeout=1)
+            try:
+                item = Item(data, timestamp, fresh_connection)
+                queue.put(item, block=False)
+            except Full:
+                logging.error(
+                    "Queue is full, real-time data collection impossible. Exiting."
+                )
+                shutdown.set()
 
 
 def process_data(queue, conf):
@@ -206,27 +217,27 @@ def process_data(queue, conf):
     # Loop until a shutdown flag is set and all items in the queue have been received
     while not (shutdown.is_set() and queue.empty()):
         try:
-            data, timestamp, fresh_connection = queue.get(timeout=1)
+            item = queue.get(timeout=1)
         except Empty:
             # If the queue is empty, wait for messages that might arrive in the future
             continue
 
         try:
-            variables = parse(data, conf)
+            variables = parse(item.data, conf)
             # Details will be printed only when log_level="DEBUG"
             logging.debug("Got {}".format(dict(variables)))
         except ParseError:
             # The regex pattern produced no match or there was a type conversion error.
-            if fresh_connection:
+            if item.fresh_connection:
                 # We expect the very first message received upon establishing
                 # a connection to be incomplete quite often.
-                logging.debug("Possibly incomplete first message: {}".format(data))
+                logging.debug("Possibly incomplete first message: {}".format(item.data))
             else:
-                logging.error("Cannot parse message: {}".format(data))
+                logging.error("Cannot parse a complete message: {}".format(item.data))
             continue
 
         # Collect the parsed data, saving only the values
-        variables["time"] = timestamp
+        variables["time"] = item.timestamp
         data_list.append(tuple(variables.values()))
 
         # Save the data to disk when the packing limit is reached
