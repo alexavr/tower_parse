@@ -437,7 +437,7 @@ def configure_logging(log_level, log_file):
 
     # Setup simultaneous logging to the console
     console = logging.StreamHandler()
-    formatter = logging.Formatter("%(message)s")
+    formatter = logging.Formatter("%(levelname)-5s %(message)s")
     console.setFormatter(formatter)
     root.addHandler(console)
 
