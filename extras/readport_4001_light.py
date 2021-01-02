@@ -5,7 +5,7 @@ device_name = "Test1"
 HOST, PORT = "192.168.192.48", 4001
 
 FillValue = -999.
-pack_limit = 12000 # 12000 # 20*60*10 (10')
+pack_length = 12000 # 12000 # 20*60*10 (10')
 
 import socket #, os, sys
 import re
