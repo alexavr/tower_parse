@@ -276,7 +276,7 @@ def listen_device(queue, host, port, timeout):
         queue: a multiprocessing queue to send data to
         host: IP address of the device
         port: integer port number to listen to
-        timeout: a timeout in seconds for connecting and reading data (default: None)
+        timeout: a timeout in seconds for connecting and reading data
     """
     with TCPClient(host, port, timeout) as client:
         # Establish socket connection to the device
