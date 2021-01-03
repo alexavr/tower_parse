@@ -1,11 +1,11 @@
 #!/usr/bin/env python3.5
 
 station_name = "MSU"
-sonic_name = "Test1"
+device_name = "Test1"
 HOST, PORT = "192.168.192.48", 4001
 
 FillValue = -999.
-pack_limit = 12000 # 12000 # 20*60*10 (10')
+pack_length = 12000 # 12000 # 20*60*10 (10')
 
 import socket #, os, sys
 import re
@@ -47,7 +47,7 @@ def isOpen(ip,port):
    except:
       return False
 
-fileout = "./data/"+station_name+"_"+sonic_name+"_"+timestr()
+fileout = "./data/"+station_name+"_"+device_name+"_"+timestr()
 f = open(fileout+".bin", 'wb')
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

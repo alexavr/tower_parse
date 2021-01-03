@@ -1,11 +1,11 @@
 #!/usr/bin/env python3.5
 
 station_name = "MSU"
-sonic_name = "Test1"
+device_name = "Test1"
 HOST, PORT = "192.168.192.48", 4001
 
 FillValue = -999.
-pack_limit = 12000 # 12000 # 20*60*10 (10')
+pack_length = 12000 # 12000 # 20*60*10 (10')
 
 import socket, time #, os, sys
 import re
@@ -55,7 +55,7 @@ try:
     while True:
         l = 1
         data_list = []
-        while l <= pack_limit:
+        while l <= pack_length:
             
             try: 
                 data_src = sock.recv(1024).decode()
@@ -77,7 +77,7 @@ try:
             
             l += 1
 
-        fileout = "./data/"+station_name+"_"+sonic_name+"_"+timestr()
+        fileout = "./data/"+station_name+"_"+device_name+"_"+timestr()
 
         # # ASCII
         # with open(fileout+".dat", 'w') as f:

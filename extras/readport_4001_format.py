@@ -3,11 +3,11 @@
 import socket
 
 station_name = "MSU"
-sonic_name = "Test1"
+device_name = "Test1"
 # HOST, PORT = "192.168.192.48", 4001
 HOST, PORT = "192.168.192.48", 4001
 
-template = "./data/{station_name}_{sonic_name}_{idx}.bin"
+template = "./data/{station_name}_{device_name}_{idx}.bin"
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
     sock.connect((HOST, PORT))
@@ -18,7 +18,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         print("Final message byte:", hex(data[-1]))
 
         filename = template.format(
-            station_name=station_name, sonic_name=sonic_name, idx=i
+            station_name=station_name, device_name=device_name, idx=i
         )
         with open(filename, "wb") as f:
             f.write(data)
