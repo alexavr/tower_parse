@@ -349,6 +349,11 @@ def read_cmdline():
     required.add_argument(
         "-c", "--config", help="path to the configuration file", required=True,
     )
+    parser.add_argument(
+        "--debug",
+        help="turn on DEBUG logging (overrides the setting in the config file)",
+        action="store_true",
+    )
     args = parser.parse_args()
     return args
 
@@ -453,7 +458,8 @@ def main():
         sys.exit(1)
 
     # Set up logging to the console and the log-files
-    configure_logging(log_level=conf.log_level, log_file=conf.log_file)
+    log_level = "DEBUG" if args.debug else conf.log_level
+    configure_logging(log_level=log_level, log_file=conf.log_file)
     logging.info("Logging to the file '{}'".format(conf.log_file))
 
     # Ignore Ctrl-C in subprocesses
