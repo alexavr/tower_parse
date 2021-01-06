@@ -242,12 +242,17 @@ class Parser:
         # Save the data to disk when the packing limit is reached
         if len(self._buffer["time"]) == self.pack_length:
             try:
-                # Make sure the target directory exists
-                p = Path(str(self.dest).format(date=datetime.utcnow()))
-                p.parent.mkdir(parents=True, exist_ok=True)
+                # Make sure the destination directory exists
+                target = Path(str(self.dest).format(date=datetime.utcnow()))
+                target.parent.mkdir(parents=True, exist_ok=True)
 
-                # Save the variables to a compressed Numpy file with a current timestamp
-                np.savez_compressed(p, **self._buffer)
+                # Save the variables to a temporary file
+                tmpfile = target.with_suffix(".tmp")
+                with tmpfile.open(mode="wb") as f:
+                    np.savez_compressed(f, **self._buffer)
+
+                # Rename to ".npz" to make `rsync --remove-source-files` safe
+                tmpfile.rename(target)
             except Exception as e:
                 logging.error(
                     "Saving failed: {}. {:,} data points will be lost.".format(
@@ -256,7 +261,7 @@ class Parser:
                 )
                 raise
             else:
-                logging.info("Data saved to '{}'".format(p))
+                logging.info("Data saved to '{}'".format(target))
             finally:
                 # Reset the in-memory storage
                 self._buffer.clear()
