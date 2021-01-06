@@ -11,14 +11,30 @@ def test_parser_extract_ok():
     """Check that well-formed inputs produce the correct extracted values
     """
     data = b"\x02Q,+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
-    regex = br"^.+,([^,]+),([^,]+),([^,]+),.,([^,]+),.+$"
-    var_names = "u v w temp".split()
-    multiplier = 10  # for the sake of the test only
+    regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
     timestamp = time.time()
-    expected = dict(u=0.79, v=-1.02, w=0.95, temp=149.4, time=timestamp)
+    expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
 
     item = Item(data, timestamp, False)
-    parser = Parser(regex, var_names, multiplier, None, None)
+    parser = Parser(regex, None, None)
+    got = parser.extract(item)
+    assert got == expected
+
+
+def test_parser_extract_or():
+    """Test that a regex with capture groups that do not participate in a match
+    (e.g. an OR) produces the correct output
+    """
+    data = b"\x02Q,+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
+    regex = (
+        br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
+        br"|(?P<extra>pattern)"
+    )
+    timestamp = time.time()
+    expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
+
+    item = Item(data, timestamp, False)
+    parser = Parser(regex, None, None)
     got = parser.extract(item)
     assert got == expected
 
@@ -27,11 +43,9 @@ def test_parser_extract_incomplete(caplog):
     """Ensure that an incomplete message results in no match and raises an exception
     """
     data = b"M,+014.94,0000001,\x030F\r\n"
-    regex = br"^.+,([^,]+),([^,]+),([^,]+),.,([^,]+),.+$"
-    var_names = "u v w temp".split()
-    multiplier = 1
+    regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
-    parser = Parser(regex, var_names, multiplier, None, None)
+    parser = Parser(regex, None, None)
     with pytest.raises(AttributeError):
         item = Item(data, time.time(), True)
         parser.extract(item)
@@ -59,53 +73,29 @@ def test_parser_extract_cast_error():
     """Check that floating point conversions trigger an exception
     """
     data = b"\x02Q,ZZZ+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
-    regex = br"^.+,([^,]+),([^,]+),([^,]+),.,([^,]+),.+$"
-    var_names = "u v w temp".split()
-    multiplier = 1
+    regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
     item = Item(data, time.time(), False)
-    parser = Parser(regex, var_names, multiplier, None, None)
+    parser = Parser(regex, None, None)
     with pytest.raises(ValueError):
-        parser.extract(item)
-
-
-def test_parser_extract_mismatch():
-    """Verify that a mismatch between the number of extracted values and var_names
-    raises a parse error
-    """
-    data = b"\x02Q,+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
-    regex = br"^.+,([^,]+),([^,]+),([^,]+),.,([^,]+),.+$"
-    var_names = "u v w temp extra".split()
-    multiplier = 1
-
-    item = Item(data, time.time(), False)
-    parser = Parser(regex, var_names, multiplier, None, None)
-    with pytest.raises(AssertionError):
         parser.extract(item)
 
 
 def test_parser_write_ok(tmp_path):
     """Ensure that files are written properly
     """
-    var_names = "u v w temp".split()
-    all_vars = var_names + ["time"]
+    all_vars = ["u", "v", "w", "temp", "time"]
     pack_length = 2
 
     # Use microseconds and a unique file identifier
-    destination = str(tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz")
+    dest = tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
     microsecond = 0.000001
 
     # Two complete files expected as output:
     n_iters = 2
     buffers = [defaultdict(list) for _ in range(n_iters)]
 
-    parser = Parser(
-        regex=None,
-        var_names=var_names,
-        multiplier=None,
-        pack_length=pack_length,
-        destination=destination,
-    )
+    parser = Parser(regex=None, pack_length=pack_length, dest=dest)
 
     for i in range(n_iters):
         for _ in range(pack_length):
@@ -131,45 +121,30 @@ def test_parser_write_ok(tmp_path):
 
 
 def test_parser_write_inconsistent_vars(tmp_path):
-    """Check that supplying a wrong set of variables triggers and exception
+    """Check that supplying a wrong set of variables triggers an exception
     """
-    var_names = ["u", "v", "w"]
-    all_vars = var_names + ["time"]
-    variables = {var: 1.0 for var in all_vars}
-    # Remove one of the variables, which should cause an error
-    del variables["u"]
+    variables = {var: 1.0 for var in ["u", "v", "w", "time"]}
 
     pack_length = 2
-    destination = str(tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz")
+    dest = tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
 
-    parser = Parser(
-        regex=None,
-        var_names=var_names,
-        multiplier=None,
-        pack_length=pack_length,
-        destination=destination,
-    )
+    parser = Parser(regex=None, pack_length=pack_length, dest=dest)
     with pytest.raises(AssertionError):
+        parser.write(variables)
+        # Remove one of the variables, which should cause an error
+        del variables["u"]
         parser.write(variables)
 
 
 def test_parser_write_mkdir_failed():
     """Test that failing at filesystem operations raises an error
     """
-    var_names = ["u", "v", "w"]
-    all_vars = var_names + ["time"]
-    variables = {var: 1.0 for var in all_vars}
+    variables = {var: 1.0 for var in ["u", "v", "w", "time"]}
 
     pack_length = 1
     # Use the /TEST directory to cause a permission problem
-    destination = str(Path("/") / "TEST" / "MSU_Test1_{date:%H-%M-%S-%f}.npz")
+    dest = Path("/") / "TEST" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
 
-    parser = Parser(
-        regex=None,
-        var_names=var_names,
-        multiplier=None,
-        pack_length=pack_length,
-        destination=destination,
-    )
+    parser = Parser(regex=None, pack_length=pack_length, dest=dest)
     with pytest.raises(OSError):
         parser.write(variables)

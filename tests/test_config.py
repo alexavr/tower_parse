@@ -7,40 +7,38 @@ from readport import load_config, ConfigurationError
 def test_load_config():
     """Check that the loaded configuration options have correct values and data types
     """
-    config = r"""
+    config ="""
         [device]
-        station_name = MSU
-        device_name = Test1
+        station = MSU
+        name = Test1
         host = 127.0.0.1
         port = 4001
         timeout = 30
 
         [parser]
-        regex = ^x= *(\S+) y= *(\S+) z= *(\S+) T= *(\S+).*$
-        var_names = u v w temp
-        multiplier = 1
+        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+).*$
         pack_length = 12000
-        destination = ./data/${device:station_name}_${device:device_name}_${date}.npz
-        date_format = %Y-%m-%d_%H-%M-%S
+        destination = ./data/
 
         [logging]
-        log_level = DEBUG
-        log_file = readport_${device:port}.log
+        level = DEBUG
+        file = readport_${device:port}.log
     """
 
     with StringIO(config) as f:
         conf = load_config(f)
 
-    assert conf.station_name == "MSU"
-    assert conf.device_name == "Test1"
+    assert conf.station == "MSU"
+    assert conf.device == "Test1"
     assert conf.host == "127.0.0.1"
     assert conf.port == 4001
     assert conf.timeout == 30
-    assert conf.regex == br"^x= *(\S+) y= *(\S+) z= *(\S+) T= *(\S+).*$"
-    assert conf.var_names == ["u", "v", "w", "temp"]
-    assert conf.multiplier == 1
+    # assert (
+    #     conf.regex
+    #     == br"^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+).*$"
+    # )
     assert conf.pack_length == 12000
-    assert conf.destination == "./data/MSU_Test1_{date:%Y-%m-%d_%H-%M-%S}.npz"
+    assert conf.dest_dir == "./data/"
     assert conf.log_level == "DEBUG"
     assert conf.log_file == "readport_4001.log"
 
@@ -66,23 +64,20 @@ def test_config_no_timeout():
     """
     config = r"""
         [device]
-        station_name = MSU
-        device_name = Test1
+        station = MSU
+        name = Test1
         host = 127.0.0.1
         port = 4001
         #timeout = 30
 
         [parser]
-        regex = ^x= *(\S+) y= *(\S+) z= *(\S+) T= *(\S+).*$
-        var_names = u v w temp
-        multiplier = 1
+        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+).*$
         pack_length = 12000
-        destination = ./data/${device:station_name}_${device:device_name}_${date}.npz
-        date_format = %Y-%m-%d_%H-%M-%S
+        destination = ./data/
 
         [logging]
-        log_level = DEBUG
-        log_file = readport_${device:port}.log
+        level = DEBUG
+        file = readport_${device:port}.log
     """
 
     with StringIO(config) as f:
@@ -96,55 +91,20 @@ def test_reserved_varname():
     """
     config = r"""
         [device]
-        station_name = MSU
-        device_name = Test1
+        station = MSU
+        name = Test1
         host = 127.0.0.1
         port = 4001
         timeout = 30
 
         [parser]
-        regex = ^x= *(\S+) y= *(\S+) z= *(\S+) T= *(\S+).*$
-        var_names = u v w temp time
-        multiplier = 1
+        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<time>\S+).*$
         pack_length = 12000
-        destination = ./data/${device:station_name}_${device:device_name}_${date}.npz
-        date_format = %Y-%m-%d_%H-%M-%S
+        destination = ./data/
 
         [logging]
-        log_level = DEBUG
-        log_file = readport_${device:port}.log
-    """
-
-    with StringIO(config) as f:
-        with pytest.raises(ConfigurationError):
-            load_config(f)
-
-
-def test_regex_varnames_mismatch():
-    """Ensure that an obvious mismatch between the number of regex capture groups and
-    the number of variable names raises an exception.
-
-    Config loader will not identify a mismatch if optional capture groups are present.
-    """
-    config = r"""
-        [device]
-        station_name = MSU
-        device_name = Test1
-        host = 127.0.0.1
-        port = 4001
-        timeout = 30
-
-        [parser]
-        regex = ^x= *(\S+) y= *(\S+) z= *(\S+) T= *(\S+).*$
-        var_names = u v w temp extra
-        multiplier = 1
-        pack_length = 12000
-        destination = ./data/${device:station_name}_${device:device_name}_${date}.npz
-        date_format = %Y-%m-%d_%H-%M-%S
-
-        [logging]
-        log_level = DEBUG
-        log_file = readport_${device:port}.log
+        level = DEBUG
+        file = readport_${device:port}.log
     """
 
     with StringIO(config) as f:
@@ -157,23 +117,46 @@ def test_regex_invalid():
     """
     config = r"""
         [device]
-        station_name = MSU
-        device_name = Test1
+        station = MSU
+        name = Test1
         host = 127.0.0.1
         port = 4001
         timeout = 30
 
         [parser]
-        regex = ^x= *(\S+) y= *(\S+) z= *(\S+) T= *(\S+
-        var_names = u v w temp extra
-        multiplier = 1
+        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+.*$
         pack_length = 12000
-        destination = ./data/${device:station_name}_${device:device_name}_${date}.npz
-        date_format = %Y-%m-%d_%H-%M-%S
+        destination = ./data/
 
         [logging]
-        log_level = DEBUG
-        log_file = readport_${device:port}.log
+        level = DEBUG
+        file = readport_${device:port}.log
+    """
+
+    with StringIO(config) as f:
+        with pytest.raises(ConfigurationError):
+            load_config(f)
+
+
+def test_regex_not_named():
+    """Check that any unnamed regex capture groups trigger an error.
+    """
+    config = r"""
+        [device]
+        station = MSU
+        name = Test1
+        host = 127.0.0.1
+        port = 4001
+        timeout = 30
+
+        [parser]
+        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(\S+).*$
+        pack_length = 12000
+        destination = ./data/
+
+        [logging]
+        level = DEBUG
+        file = readport_${device:port}.log
     """
 
     with StringIO(config) as f:

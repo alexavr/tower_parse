@@ -161,22 +161,18 @@ class Parser:
     """An implementation of the parser which extracts variables from the device
     binary messages and writes them periodically to disc."""
 
-    def __init__(
-        self, regex, var_names, multiplier, pack_length, destination,
-    ):
+    def __init__(self, regex, pack_length, dest):
         """Initialize the parser
 
         Args:
-            regex, var_names, multiplier, pack_length: values from the config file
-            destination: the target filename where to save the data, with an optional
+            regex: regular expression for variable extraction
+            pack_length: the number of records to save in each file
+            dest: the target filename where to save the data, with an optional
                 "{date}" placeholder for the current date and time.
         """
         self.regex = regex
-        self.var_names = var_names
-        self.all_vars = set(var_names + ["time"])
-        self.multiplier = multiplier
         self.pack_length = pack_length
-        self.destination = destination
+        self.dest = dest
         self._buffer = defaultdict(list)
 
     def extract(self, item):
@@ -187,20 +183,19 @@ class Parser:
                 connection flag
 
         Returns:
-            variables: a dict of variable-values pairs, including the timestamp
+            extracted: a dict of variable-values pairs, including the timestamp
 
         Raises:
             AttributeError: when no match is found by the regex
             ValueError: when conversion of the extracted value to a float fails
-            AssertionError: if the number of extracted values and var_names differ
             re.error: for other types of regex errors
         """
         try:
             match = re.match(self.regex, item.data)
-            values = [float(value) * self.multiplier for value in match.groups()]
-            assert len(values) == len(self.var_names), (
-                "Regex extracted {} values, but {} var_names are specified"
-            ).format(len(values), len(self.var_names))
+            # Collect the results, filtering out capture groups that didn't match
+            extracted = {
+                k: float(v) for k, v in match.groupdict().items() if v is not None
+            }
         except AttributeError:
             # The regex pattern produced no match
             if item.fresh_connection:
@@ -214,42 +209,41 @@ class Parser:
             logging.error(e)
             raise
         else:
-            variables = dict(zip(self.var_names, values))
-            variables["time"] = item.timestamp
-            logging.debug("Got {}".format(variables))
+            extracted["time"] = item.timestamp
+            logging.debug("Got {}".format(extracted))
 
-        return variables
+        return extracted
 
-    def write(self, variables):
-        """Write the variables to an internal buffer, which is saved to disk
+    def write(self, extracted):
+        """Write the extracted variables to an internal buffer, which is saved to disk
         when pack_length is reached.
 
         Args:
-            variables: a dict of variable-value pairs, i.e. the output of extract()
+            extracted: a dict of variable-value pairs, i.e. the output of extract()
 
         Raises:
-            AssertionError: if the supplied variables differ from var_names + "time"
+            AssertionError: if the supplied variables differ from previously saved
             Other exceptions: for filesystem-related and Numpy issues.
         """
         try:
             # Ensure that variable names are consistent across all messages
-            all_vars = set(variables.keys())
-            assert all_vars == self.all_vars, (
-                "Cannot save the supplied variables. Expected {}, but got {}"
-            ).format(sorted(self.all_vars), sorted(all_vars))
+            if self._buffer:
+                assert extracted.keys() == self._buffer.keys(), (
+                    "Cannot save the supplied variables. Expected {}, but got {}"
+                ).format(sorted(self._buffer.keys()), sorted(extracted.keys()))
         except AssertionError as e:
             logging.error(e)
             raise
 
         # Collect the extracted values
-        for var, value in variables.items():
+        for var, value in extracted.items():
             self._buffer[var].append(value)
 
         # Save the data to disk when the packing limit is reached
         if len(self._buffer["time"]) == self.pack_length:
             try:
                 # Make sure the target directory exists
-                p = Path(self.destination.format(date=datetime.utcnow()))
+                p = Path(str(self.dest).format(date=datetime.utcnow()))
                 p.parent.mkdir(parents=True, exist_ok=True)
 
                 # Save the variables to a compressed Numpy file with a current timestamp
@@ -311,16 +305,17 @@ def listen_device(queue, host, port, timeout):
                 shutdown.set()
 
 
-def process_data(queue, regex, var_names, multiplier, pack_length, destination):
+def process_data(queue, regex, pack_length, dest):
     """Take messages from the queue, parse them and periodically save to disk.
 
     Args:
         queue: a multiprocessing queue to read messages from
-        regex, var_names, multiplier, pack_length: values from the config file
-        destination: the target filename where to save the data, with an optional
+        regex: regular expression for variable extraction
+        pack_length: the number of records to save in each file
+        dest: the target filename where to save the data, with an optional
             "{date}" placeholder for the current date and time.
     """
-    parser = Parser(regex, var_names, multiplier, pack_length, destination)
+    parser = Parser(regex, pack_length, dest)
 
     # Loop until a shutdown flag is set and all items in the queue have been received
     while not (shutdown.is_set() and queue.empty()):
@@ -378,24 +373,24 @@ def load_config(f):
         value = config.get(section, option, raw=True)
         return literal_eval("b'{}'".format(value))
 
-    # Handle the special ${date} variable
-    date_format = config.get("parser", "date_format")
-    config["DEFAULT"]["date"] = "{{date:{}}}".format(date_format)
+    # Hardcode the filename template
+    config["DEFAULT"][
+        "filename"
+    ] = "${device:station}_${device:name}_{date:%Y-%m-%d_%H-%M-%S}.npz"
 
     # Flatten the structure and convert the types of the parameters
     conf = dict(
-        station_name=config.get("device", "station_name"),
-        device_name=config.get("device", "device_name"),
+        station=config.get("device", "station"),
+        device=config.get("device", "name"),
         host=config.get("device", "host"),
         port=config.getint("device", "port"),
         timeout=config.getint("device", "timeout", fallback=None),
         regex=read_bytes("parser", "regex"),
-        var_names=config.get("parser", "var_names").split(),
-        multiplier=config.getfloat("parser", "multiplier"),
         pack_length=config.getint("parser", "pack_length"),
-        destination=config.get("parser", "destination"),
-        log_level=config.get("logging", "log_level"),
-        log_file=config.get("logging", "log_file"),
+        dest_dir=config.get("parser", "destination"),
+        filename=config.get("DEFAULT", "filename"),
+        log_level=config.get("logging", "level"),
+        log_file=config.get("logging", "file"),
     )
 
     # Convert the dictionary to a Namespace object, to enable .attribute access
@@ -406,35 +401,33 @@ def load_config(f):
         pattern = re.compile(conf.regex)
     except re.error as e:
         raise ConfigurationError("regex: {}".format(e))
-    # Check that all capture groups are named
-    if pattern.groups != len(conf.var_names):
-        raise ConfigurationError(
-            "mismatch between the number of regex capture groups and var_names"
-        )
 
-    # Ensure that "time" isn't used as a var_name in the config file
-    if "time" in conf.var_names:
+    if pattern.groups != len(pattern.groupindex):
+        raise ConfigurationError("all of the regex capture groups must be named")
+
+    # Ensure that "time" isn't used in the regex
+    if "time" in pattern.groupindex:
         raise ConfigurationError(
-            "'time' is reserved for the message timestamp "
-            "and cannot be listed in var_names"
+            "don't use 'time' as a regex variable, "
+            "it is reserved for the message timestamp"
         )
 
     return conf
 
 
-def configure_logging(log_level, log_file):
+def configure_logging(level, file):
     """Setup rotated logging to the file and the console
 
     Args:
-        log_level: the threshold for the logging system ("INFO", "DEBUG", etc.)
-        log_file: the filename of the log to write to
+        level: the threshold for the logging system ("INFO", "DEBUG", etc.)
+        file: the filename of the log to write to
     """
     root = logging.getLogger()
-    root.setLevel(log_level)
+    root.setLevel(level)
 
     # Setup a rotating log file. At most 5 backup copies are kept, less than 10 MB each.
     handler = logging.handlers.RotatingFileHandler(
-        log_file, mode="a", maxBytes=1e7, backupCount=5
+        file, mode="a", maxBytes=1e7, backupCount=5
     )
     formatter = logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s")
     handler.setFormatter(formatter)
@@ -459,7 +452,7 @@ def main():
 
     # Set up logging to the console and the log-files
     log_level = "DEBUG" if args.debug else conf.log_level
-    configure_logging(log_level=log_level, log_file=conf.log_file)
+    configure_logging(level=log_level, file=conf.log_file)
     logging.info("Logging to the file '{}'".format(conf.log_file))
 
     # Ignore Ctrl-C in subprocesses
@@ -478,10 +471,8 @@ def main():
         kwargs=dict(
             queue=queue,
             regex=conf.regex,
-            var_names=conf.var_names,
-            multiplier=conf.multiplier,
             pack_length=conf.pack_length,
-            destination=conf.destination,
+            dest=Path(conf.dest_dir) / conf.filename,
         ),
     )
     global processes
