@@ -16,6 +16,7 @@ from datetime import datetime
 from multiprocessing import Process, Queue, Event
 from pathlib import Path
 from queue import Empty, Full
+from typing import Optional, TextIO, Union
 
 import numpy as np
 
@@ -56,7 +57,7 @@ def signal_handler(sig, frame):
 class TCPClient:
     """A TCP socket connection that reads newline-delimited messages."""
 
-    def __init__(self, host, port, timeout=None):
+    def __init__(self, host: str, port: int, timeout: Optional[float] = None):
         """Initialize the socket connection class.
 
         Args:
@@ -78,7 +79,7 @@ class TCPClient:
         self.close()
 
     @property
-    def fresh(self):
+    def fresh(self) -> bool:
         """Indicates whether the connection is fresh, i.e. no data has been
         received over the socket yet.
         """
@@ -115,7 +116,7 @@ class TCPClient:
 
         # Shutting down before connection could be established
 
-    def readline(self):
+    def readline(self) -> bytes:
         """Read complete messages ending in "\n". If a partial message is received,
         buffer and wait for the remainder before continuing. If multiple joined
         messages are obtained, split them into individual records.
@@ -165,7 +166,7 @@ class Parser:
     """An implementation of the parser which extracts variables from the device
     binary messages and writes them periodically to disc."""
 
-    def __init__(self, regex, pack_length, dest):
+    def __init__(self, regex: bytes, pack_length: int, dest: Union[str, Path]):
         """Initialize the parser
 
         Args:
@@ -179,7 +180,7 @@ class Parser:
         self.dest = dest
         self._buffer = defaultdict(list)
 
-    def extract(self, item):
+    def extract(self, item: Item) -> dict:
         """Extract variables from the binary device data
 
         Args:
@@ -218,7 +219,7 @@ class Parser:
 
         return extracted
 
-    def write(self, extracted):
+    def write(self, extracted: dict):
         """Write the extracted variables to an internal buffer, which is saved to disk
         when pack_length is reached.
 
@@ -271,7 +272,7 @@ class Parser:
                 self._buffer.clear()
 
 
-def listen_device(queue, host, port, timeout):
+def listen_device(queue: Queue, host: str, port: int, timeout: Optional[float] = None):
     """Receive messages from the device over a TCP socket and queue them
     for parallel processing.
 
@@ -279,7 +280,7 @@ def listen_device(queue, host, port, timeout):
         queue: a multiprocessing queue to send data to
         host: IP address of the device
         port: integer port number to listen to
-        timeout: a timeout in seconds for connecting and reading data
+        timeout: a timeout in seconds for connecting and reading data (default: None)
     """
     with TCPClient(host, port, timeout) as client:
         # Establish socket connection to the device
@@ -314,7 +315,7 @@ def listen_device(queue, host, port, timeout):
                 shutdown.set()
 
 
-def process_data(queue, regex, pack_length, dest):
+def process_data(queue: Queue, regex: bytes, pack_length: int, dest: Union[str, Path]):
     """Take messages from the queue, parse them and periodically save to disk.
 
     Args:
@@ -341,7 +342,7 @@ def process_data(queue, regex, pack_length, dest):
             continue
 
 
-def read_cmdline():
+def read_cmdline() -> argparse.Namespace:
     """Parse the command-line arguments.
 
     Returns:
@@ -362,7 +363,7 @@ def read_cmdline():
     return args
 
 
-def load_config(f):
+def load_config(f: TextIO) -> argparse.Namespace:
     """Load the configuration file with correct parameter data types.
 
     Args:
@@ -377,7 +378,7 @@ def load_config(f):
     )
     config.read_file(f)
 
-    def read_bytes(section, option):
+    def read_bytes(section: str, option: str):
         """Read an option from the config file as bytes"""
         value = config.get(section, option, raw=True)
         return literal_eval("b'{}'".format(value))
@@ -424,7 +425,7 @@ def load_config(f):
     return conf
 
 
-def configure_logging(level, file):
+def configure_logging(level: str, file: str):
     """Setup rotated logging to the file and the console
 
     Args:

@@ -16,7 +16,7 @@ def test_parser_extract_ok():
     expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
 
     item = Item(data, timestamp, False)
-    parser = Parser(regex, None, None)
+    parser = Parser(regex, 0, "")
     got = parser.extract(item)
     assert got == expected
 
@@ -34,7 +34,7 @@ def test_parser_extract_or():
     expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
 
     item = Item(data, timestamp, False)
-    parser = Parser(regex, None, None)
+    parser = Parser(regex, 0, "")
     got = parser.extract(item)
     assert got == expected
 
@@ -45,7 +45,7 @@ def test_parser_extract_incomplete(caplog):
     data = b"M,+014.94,0000001,\x030F\r\n"
     regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
-    parser = Parser(regex, None, None)
+    parser = Parser(regex, 0, "")
     with pytest.raises(ParseError):
         item = Item(data, time.time(), True)
         parser.extract(item)
@@ -76,7 +76,7 @@ def test_parser_extract_cast_error():
     regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
     item = Item(data, time.time(), False)
-    parser = Parser(regex, None, None)
+    parser = Parser(regex, 0, "")
     with pytest.raises(ParseError):
         parser.extract(item)
 
@@ -95,7 +95,7 @@ def test_parser_write_ok(tmp_path):
     n_iters = 2
     buffers = [defaultdict(list) for _ in range(n_iters)]
 
-    parser = Parser(regex=None, pack_length=pack_length, dest=dest)
+    parser = Parser(regex=b"", pack_length=pack_length, dest=dest)
 
     for i in range(n_iters):
         for _ in range(pack_length):
@@ -128,7 +128,7 @@ def test_parser_write_inconsistent_vars(tmp_path):
     pack_length = 2
     dest = tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
 
-    parser = Parser(regex=None, pack_length=pack_length, dest=dest)
+    parser = Parser(regex=b"", pack_length=pack_length, dest=dest)
     with pytest.raises(ParseError):
         parser.write(variables)
         # Remove one of the variables, which should cause an error
@@ -145,6 +145,6 @@ def test_parser_write_mkdir_failed():
     # Use the /TEST directory to cause a permission problem
     dest = Path("/") / "TEST" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
 
-    parser = Parser(regex=None, pack_length=pack_length, dest=dest)
+    parser = Parser(regex=b"", pack_length=pack_length, dest=dest)
     with pytest.raises(ParseError):
         parser.write(variables)
