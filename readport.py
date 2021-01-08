@@ -33,6 +33,10 @@ class ConfigurationError(Exception):
     """An exception thrown when the config file is incorrectly specified"""
 
 
+class ParseError(Exception):
+    """An exception raised when the parser fails to process data or save it to disk"""
+
+
 def signal_handler(sig, frame):
     """A handler for the Ctrl-C event and the TERM signal."""
     if shutdown.is_set() or sig == signal.SIGTERM:
@@ -95,7 +99,7 @@ class TCPClient:
         while not shutdown.is_set():
             try:
                 self._sock.connect((self.host, self.port))
-            except Exception:
+            except OSError:
                 time.sleep(1)
             else:
                 logging.info(
@@ -119,7 +123,7 @@ class TCPClient:
         Returns:
             data: a binary string
 
-        Rases:
+        Raises:
             OSError: propagate errors and empty messages as exceptions. There is no such
             thing as an empty message in TCP, so zero length means a peer disconnect.
         """
@@ -150,11 +154,11 @@ class TCPClient:
             if self._sock:
                 self._sock.shutdown(socket.SHUT_RDWR)
                 self._sock.close()
-        except Exception:
+        except OSError:
             pass
-
-        self._fd = None
-        self._sock = None
+        finally:
+            self._fd = None
+            self._sock = None
 
 
 class Parser:
@@ -196,7 +200,7 @@ class Parser:
             extracted = {
                 k: float(v) for k, v in match.groupdict().items() if v is not None
             }
-        except AttributeError:
+        except AttributeError as e:
             # The regex pattern produced no match
             if item.fresh_connection:
                 # We expect the very first message received upon establishing
@@ -204,10 +208,10 @@ class Parser:
                 logging.debug("Possibly incomplete first message: {}".format(item.data))
             else:
                 logging.error("Cannot parse a complete message: {}".format(item.data))
-            raise
+            raise ParseError(e)
         except Exception as e:
             logging.error(e)
-            raise
+            raise ParseError(e)
         else:
             extracted["time"] = item.timestamp
             logging.debug("Got {}".format(extracted))
@@ -233,7 +237,7 @@ class Parser:
                 ).format(sorted(self._buffer.keys()), sorted(extracted.keys()))
         except AssertionError as e:
             logging.error(e)
-            raise
+            raise ParseError(e)
 
         # Collect the extracted values
         for var, value in extracted.items():
@@ -247,19 +251,19 @@ class Parser:
                 target.parent.mkdir(parents=True, exist_ok=True)
 
                 # Save the variables to a temporary file
-                tmpfile = target.with_suffix(".tmp")
-                with tmpfile.open(mode="wb") as f:
+                tmp_file = target.with_suffix(".tmp")
+                with tmp_file.open(mode="wb") as f:
                     np.savez_compressed(f, **self._buffer)
 
                 # Rename to ".npz" to make `rsync --remove-source-files` safe
-                tmpfile.rename(target)
+                tmp_file.rename(target)
             except Exception as e:
                 logging.error(
                     "Saving failed: {}. {:,} data points will be lost.".format(
                         e, self.pack_length
                     )
                 )
-                raise
+                raise ParseError(e)
             else:
                 logging.info("Data saved to '{}'".format(target))
             finally:
@@ -333,7 +337,7 @@ def process_data(queue, regex, pack_length, dest):
         try:
             variables = parser.extract(item)
             parser.write(variables)
-        except Exception:
+        except ParseError:
             continue
 
 
@@ -432,7 +436,7 @@ def configure_logging(level, file):
 
     # Setup a rotating log file. At most 5 backup copies are kept, less than 10 MB each.
     handler = logging.handlers.RotatingFileHandler(
-        file, mode="a", maxBytes=1e7, backupCount=5
+        file, mode="a", maxBytes=int(1e7), backupCount=5
     )
     formatter = logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s")
     handler.setFormatter(formatter)

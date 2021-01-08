@@ -7,7 +7,7 @@ from readport import load_config, ConfigurationError
 def test_load_config():
     """Check that the loaded configuration options have correct values and data types
     """
-    config ="""
+    config = r"""
         [device]
         station = MSU
         name = Test1
@@ -33,10 +33,10 @@ def test_load_config():
     assert conf.host == "127.0.0.1"
     assert conf.port == 4001
     assert conf.timeout == 30
-    # assert (
-    #     conf.regex
-    #     == br"^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+).*$"
-    # )
+    assert (
+        conf.regex
+        == br"^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+).*$"
+    )
     assert conf.pack_length == 12000
     assert conf.dest_dir == "./data/"
     assert conf.log_level == "DEBUG"

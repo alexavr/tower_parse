@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 import numpy as np
 import pytest
-from readport import Item, Parser
+from readport import Item, Parser, ParseError
 
 
 def test_parser_extract_ok():
@@ -46,7 +46,7 @@ def test_parser_extract_incomplete(caplog):
     regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
     parser = Parser(regex, None, None)
-    with pytest.raises(AttributeError):
+    with pytest.raises(ParseError):
         item = Item(data, time.time(), True)
         parser.extract(item)
 
@@ -57,7 +57,7 @@ def test_parser_extract_incomplete(caplog):
     ]
     assert len(log) == 1
 
-    with pytest.raises(AttributeError):
+    with pytest.raises(ParseError):
         item = Item(data, time.time(), False)
         parser.extract(item)
 
@@ -77,7 +77,7 @@ def test_parser_extract_cast_error():
 
     item = Item(data, time.time(), False)
     parser = Parser(regex, None, None)
-    with pytest.raises(ValueError):
+    with pytest.raises(ParseError):
         parser.extract(item)
 
 
@@ -129,7 +129,7 @@ def test_parser_write_inconsistent_vars(tmp_path):
     dest = tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
 
     parser = Parser(regex=None, pack_length=pack_length, dest=dest)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ParseError):
         parser.write(variables)
         # Remove one of the variables, which should cause an error
         del variables["u"]
@@ -146,5 +146,5 @@ def test_parser_write_mkdir_failed():
     dest = Path("/") / "TEST" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
 
     parser = Parser(regex=None, pack_length=pack_length, dest=dest)
-    with pytest.raises(OSError):
+    with pytest.raises(ParseError):
         parser.write(variables)
