@@ -7,29 +7,19 @@ import pytest
 from readport import Item, Parser, ParseError
 
 
-def test_parser_extract_ok():
+@pytest.mark.parametrize(
+    "regex",
+    [
+        br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$",
+        br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
+        br"|(?P<extra>pattern)",  # a capture group that does not participate in a match
+    ],
+    ids=["regular", "non-capturing"],
+)
+def test_parser_extract(regex):
     """Check that well-formed inputs produce the correct extracted values
     """
     data = b"\x02Q,+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
-    regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
-    timestamp = time.time()
-    expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
-
-    item = Item(data, timestamp, False)
-    parser = Parser(regex, 0, "")
-    got = parser.extract(item)
-    assert got == expected
-
-
-def test_parser_extract_or():
-    """Test that a regex with capture groups that do not participate in a match
-    (e.g. an OR) produces the correct output
-    """
-    data = b"\x02Q,+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
-    regex = (
-        br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
-        br"|(?P<extra>pattern)"
-    )
     timestamp = time.time()
     expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
 
