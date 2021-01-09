@@ -88,8 +88,20 @@ def test_config_no_timeout():
     assert conf.timeout is None
 
 
-def test_reserved_varname():
-    """Check that the reserved variable name "time" in var_names triggers an exception
+@pytest.mark.parametrize(
+    "regex",
+    [
+        # The reserved variable name "time" mustn't be used:
+        r"^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<time>\S+).*$",
+        # Regex must be valid (e.g. no missing braces):
+        r"^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+.*$",
+        # All capture groups must be named:
+        r"^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(\S+).*$",
+    ],
+    ids=["reserved variable", "invalid regex", "unnamed groups"],
+)
+def test_regex_error(regex):
+    """Check that issues with the regex trigger an exception
     """
     config = r"""
         [device]
@@ -100,68 +112,16 @@ def test_reserved_varname():
         timeout = 30
 
         [parser]
-        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<time>\S+).*$
+        regex = {regex}
         pack_length = 12000
         destination = ./data/
 
         [logging]
         level = DEBUG
-        file = readport_${device:port}.log
+        file = readport_${{device:port}}.log
     """
 
-    with StringIO(config) as f:
-        with pytest.raises(ConfigurationError):
-            load_config(f)
-
-
-def test_regex_invalid():
-    """Ensure that an invalid regex raises an exception.
-    """
-    config = r"""
-        [device]
-        station = MSU
-        name = Test1
-        host = 127.0.0.1
-        port = 4001
-        timeout = 30
-
-        [parser]
-        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+.*$
-        pack_length = 12000
-        destination = ./data/
-
-        [logging]
-        level = DEBUG
-        file = readport_${device:port}.log
-    """
-
-    with StringIO(config) as f:
-        with pytest.raises(ConfigurationError):
-            load_config(f)
-
-
-def test_regex_not_named():
-    """Check that any unnamed regex capture groups trigger an error.
-    """
-    config = r"""
-        [device]
-        station = MSU
-        name = Test1
-        host = 127.0.0.1
-        port = 4001
-        timeout = 30
-
-        [parser]
-        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(\S+).*$
-        pack_length = 12000
-        destination = ./data/
-
-        [logging]
-        level = DEBUG
-        file = readport_${device:port}.log
-    """
-
-    with StringIO(config) as f:
+    with StringIO(config.format(regex=regex)) as f:
         with pytest.raises(ConfigurationError):
             load_config(f)
 
