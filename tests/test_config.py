@@ -1,6 +1,8 @@
 import configparser
+import importlib
 from io import StringIO
 import pytest
+import readport
 from readport import load_config, ConfigurationError
 
 
@@ -162,3 +164,60 @@ def test_regex_not_named():
     with StringIO(config) as f:
         with pytest.raises(ConfigurationError):
             load_config(f)
+
+
+def test_regex_no_advanced():
+    """Test that advanced regex functionality, particularly capture groups with
+    the same name:
+        - raise an error if `regex` isn't installed
+    """
+    config = r"""
+        [device]
+        station = MSU
+        name = Test1
+        host = 127.0.0.1
+        port = 4001
+        timeout = 30
+
+        [parser]
+        regex = (?P<name>foo)|(?P<name>bar)
+        pack_length = 12000
+        destination = ./data/
+
+        [logging]
+        level = DEBUG
+        file = readport_${device:port}.log
+    """
+    readport.re = importlib.import_module("re")
+    with StringIO(config) as f:
+        with pytest.raises(ConfigurationError):
+            load_config(f)
+
+
+def test_regex_advanced():
+    """Test that advanced regex functionality, particularly capture groups with
+    the same name:
+        - pass the configuration check if `regex` is installed
+    """
+    config = r"""
+        [device]
+        station = MSU
+        name = Test1
+        host = 127.0.0.1
+        port = 4001
+        timeout = 30
+
+        [parser]
+        regex = (?P<name>foo)|(?P<name>bar)
+        pack_length = 12000
+        destination = ./data/
+
+        [logging]
+        level = DEBUG
+        file = readport_${device:port}.log
+    """
+    pytest.importorskip("regex", reason="Please pip install regex")
+
+    readport.re = importlib.import_module("regex")
+    with StringIO(config) as f:
+        load_config(f)  # no exception should be raised

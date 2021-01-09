@@ -4,11 +4,16 @@ import argparse
 import configparser
 import logging
 import logging.handlers
-import re
 import signal
 import socket
 import sys
 import time
+
+try:
+    # To enable advanced regular expressions: `pip install regex`
+    import regex as re
+except ImportError:
+    import re
 
 from ast import literal_eval
 from collections import defaultdict, namedtuple
@@ -38,7 +43,7 @@ class ParseError(Exception):
     """An exception raised when the parser fails to process data or save it to disk"""
 
 
-def signal_handler(sig, frame):
+def signal_handler(sig, frame):  # noqa
     """A handler for the Ctrl-C event and the TERM signal."""
     if shutdown.is_set() or sig == signal.SIGTERM:
         # Terminate immediately
@@ -126,7 +131,7 @@ class TCPClient:
 
         Raises:
             OSError: propagate errors and empty messages as exceptions. There is no such
-            thing as an empty message in TCP, so zero length means a peer disconnect.
+                thing as an empty message in TCP, so zero length means a peer disconnect.
         """
         try:
             data = self._fd.readline()
@@ -410,6 +415,12 @@ def load_config(f: TextIO) -> argparse.Namespace:
     try:
         pattern = re.compile(conf.regex)
     except re.error as e:
+        # Additional functionality is supported with a 3rd-party regex module, e.g.:
+        if "redefinition of group name" in e.msg:
+            e.args = (
+                e.args[0] + "\nTo support such advanced regex functionality, "
+                "please `pip install regex`.",
+            ) + e.args[1:]
         raise ConfigurationError("regex: {}".format(e))
 
     if pattern.groups != len(pattern.groupindex):

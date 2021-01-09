@@ -71,6 +71,34 @@ def test_parser_extract_cast_error():
         parser.extract(item)
 
 
+def test_parser_extract_duplicate_group():
+    """Check that if regex is installed, the parser can extract a similar set of
+    variables from two completely different string formats. Specifically, the same name
+    can be used by more than one group.
+    """
+    pytest.importorskip("regex", reason="Please pip install regex")
+
+    data = [
+        b"01 RH= 1.23 %RH T= 14.94 'C \r\n",
+        b"T= 11.83 'C RH= 1.35 %RH 02 \r\n",  # e.g. the variable order is reversed
+    ]
+    regex = (
+        br"^(?P<level>\S+) RH= *(?P<rh>\S+) %RH T= *(?P<temp>\S+) .C\s*$"
+        br"|^T= *(?P<temp>\S+) .C RH= *(?P<rh>\S+) %RH (?P<level>\S+)\s*$"
+    )
+    timestamp = time.time()
+    expected = [
+        dict(level=1.0, rh=1.23, temp=14.94, time=timestamp),
+        dict(level=2.0, rh=1.35, temp=11.83, time=timestamp),
+    ]
+
+    for inp, exp in zip(data, expected):
+        item = Item(inp, timestamp, False)
+        parser = Parser(regex, 0, "")
+        got = parser.extract(item)
+        assert got == exp
+
+
 def test_parser_write_ok(tmp_path):
     """Ensure that files are written properly
     """
