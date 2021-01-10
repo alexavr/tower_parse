@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 import numpy as np
 import pytest
-from readport import Group, Item, Parser, ParseError
+from readport import Buffer, Group, Item, Parser, ParseError
 
 
 @pytest.mark.parametrize(
@@ -17,8 +17,7 @@ from readport import Group, Item, Parser, ParseError
     ids=["regular", "non-capturing"],
 )
 def test_parser_extract(regex):
-    """Check that well-formed inputs produce the correct extracted values
-    """
+    """Check that well-formed inputs produce the correct extracted values"""
     data = b"\x02Q,+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
     timestamp = time.time()
     expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
@@ -30,8 +29,7 @@ def test_parser_extract(regex):
 
 
 def test_parser_extract_incomplete(caplog):
-    """Ensure that an incomplete message results in no match and raises an exception
-    """
+    """Ensure that an incomplete message results in no match and raises an exception"""
     data = b"M,+014.94,0000001,\x030F\r\n"
     regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
@@ -62,8 +60,7 @@ def test_parser_extract_incomplete(caplog):
 
 
 def test_parser_extract_cast_error():
-    """Check that floating point conversions trigger an exception
-    """
+    """Check that floating point conversions trigger an exception"""
     data = b"\x02Q,ZZZ+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n"
     regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
@@ -124,9 +121,64 @@ def test_parser_extract_group_by():
         assert isinstance(got["level"], type(exp["level"]))
 
 
+def test_buffer_put_clear():
+    data = [
+        dict(level=1, rh=1.23, temp=14.94, time=100.0),
+        dict(level=1, rh=1.35, temp=14.85, time=101.0),
+        dict(level=1, rh=1.47, temp=14.70, time=102.0),
+        dict(level=1, rh=1.60, temp=14.56, time=103.0),
+    ]
+    buffer = Buffer(pack_length=2, group_by="level")
+    with pytest.raises(StopIteration):
+        next(buffer.full())
+
+    buffer.put(data[0])
+    buffer.put(data[1])
+    group_value, vectors = next(buffer.full())
+    assert group_value == 1
+    assert vectors == dict(
+        level=[1, 1], rh=[1.23, 1.35], temp=[14.94, 14.85], time=[100.0, 101.0]
+    )
+
+    buffer.clear(group_value=1)
+    buffer.put(data[2])
+    buffer.put(data[3])
+    group_value, vectors = next(buffer.full())
+    assert group_value == 1
+    assert vectors == dict(
+        level=[1, 1], rh=[1.47, 1.60], temp=[14.70, 14.56], time=[102.0, 103.0]
+    )
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        (
+            dict(level=1, rh=1.23, temp=14.94, time=100.0),
+            dict(level=1, time=101.0),
+        ),
+        (
+            dict(level=1, rh=1.23, temp=14.94, time=100.0),
+            dict(level=1, rh=1.35, temp=14.85),
+        ),
+        (
+            dict(level=1, rh=1.23, temp=14.94, time=100.0),
+            dict(level=1, rh=1.35, temp=14.85, time=101.0),
+            dict(level=1, rh=1.47, temp=14.70, time=102.0),
+        ),
+    ],
+    ids=["inconsistent", "missing time", "buffer full"],
+)
+def test_buffer_errors(data):
+    buffer = Buffer(pack_length=2, group_by="level")
+
+    with pytest.raises(AssertionError):
+        for extracted in data:
+            buffer.put(extracted)
+
+
 def test_parser_write_ok(tmp_path):
-    """Ensure that files are written properly
-    """
+    """Ensure that files are written properly"""
     all_vars = ["u", "v", "w", "temp", "time"]
     pack_length = 2
 
@@ -164,8 +216,7 @@ def test_parser_write_ok(tmp_path):
 
 
 def test_parser_write_inconsistent_vars(tmp_path):
-    """Check that supplying a wrong set of variables triggers an exception
-    """
+    """Check that supplying a wrong set of variables triggers an exception"""
     variables = {var: 1.0 for var in ["u", "v", "w", "time"]}
 
     pack_length = 2
@@ -182,8 +233,7 @@ def test_parser_write_inconsistent_vars(tmp_path):
 
 
 def test_parser_write_mkdir_failed():
-    """Test that failing at filesystem operations raises an error
-    """
+    """Test that failing at filesystem operations raises an error"""
     variables = {var: 1.0 for var in ["u", "v", "w", "time"]}
 
     pack_length = 1
@@ -198,8 +248,7 @@ def test_parser_write_mkdir_failed():
 
 
 def test_parser_write_group_by(tmp_path):
-    """Ensure that group_by files are written properly
-    """
+    """Ensure that group_by files are written properly"""
     data = [
         dict(level=1, rh=1.23, temp=14.85, time=time.time()),
         dict(level=2, rh=2.23, temp=11.85, time=time.time()),

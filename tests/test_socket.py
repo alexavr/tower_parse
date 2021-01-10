@@ -20,8 +20,7 @@ def humanize(address):
 
 
 class TCPServer(ExitStack):
-    """A TCP socket server for testing. Meant to be used as a context manager.
-    """
+    """A TCP socket server for testing. Meant to be used as a context manager."""
 
     def __init__(self, host: str, port: int):
         super().__init__()
@@ -114,8 +113,7 @@ class TCPServer(ExitStack):
 
 @pytest.fixture
 def server():
-    """Launch a TCP server in a separate thread and return the instantiated object.
-    """
+    """Launch a TCP server in a separate thread and return the instantiated object."""
     # Use concurrent.futures.ThreadPoolExecutor instead of threading.Thread
     # to propagate exceptions to the caller.
     with ThreadPoolExecutor(max_workers=1) as executor, TCPServer(HOST, PORT) as srv:
@@ -128,8 +126,7 @@ def server():
 
 @pytest.fixture
 def store():
-    """Record all objects sent to a queue and return the individual attributes.
-    """
+    """Record all objects sent to a queue and return the individual attributes."""
 
     class Store:
         def __init__(self):
@@ -148,8 +145,7 @@ def store():
 
 
 def test_connection(server):
-    """Check that the TCP server and a basic reconnecting client are communicating properly.
-    """
+    """Check that the TCP server and a basic reconnecting client are communicating properly."""
     outgoing = [
         b"message 1\n",
         b"message 2\n",
@@ -192,8 +188,7 @@ def test_connection(server):
 
 
 def test_listen_device_readline(server, store):
-    """Ensure that the messages are read line by line
-    """
+    """Ensure that the messages are read line by line"""
     outgoing = [
         b"message 1\n",
         b"mess",
@@ -226,8 +221,7 @@ def test_listen_device_readline(server, store):
 
 
 def test_listen_device_timeout(server, store, caplog):
-    """Check that the timeout triggers reconnection and receives the follow-up messages
-    """
+    """Check that the timeout triggers reconnection and receives the follow-up messages"""
     instructions = [
         b"message 1\n",
         b"<timeout 1>",

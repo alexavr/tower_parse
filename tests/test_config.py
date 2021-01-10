@@ -7,8 +7,7 @@ from readport import Group, load_config, ConfigurationError
 
 
 def test_load_config():
-    """Check that the loaded configuration options have correct values and data types
-    """
+    """Check that the loaded configuration options have correct values and data types"""
     config = r"""
         [device]
         station = MSU
@@ -47,8 +46,7 @@ def test_load_config():
 
 
 def test_missing_setting():
-    """Ensure that missing required options trigger an exception
-    """
+    """Ensure that missing required options trigger an exception"""
 
     config = r"""
         [device]
@@ -63,8 +61,7 @@ def test_missing_setting():
 
 
 def test_config_no_timeout():
-    """Check that a commented out "timeout" yields timeout=None.
-    """
+    """Check that a commented out "timeout" yields timeout=None."""
     config = r"""
         [device]
         station = MSU
@@ -102,8 +99,7 @@ def test_config_no_timeout():
     ids=["reserved variable", "invalid regex", "unnamed groups"],
 )
 def test_regex_error(regex):
-    """Check that issues with the regex trigger an exception
-    """
+    """Check that issues with the regex trigger an exception"""
     config = r"""
         [device]
         station = MSU
@@ -185,8 +181,7 @@ def test_regex_advanced():
 
 
 def test_missing_group_by():
-    """Ensure that if group_by isn't specified, the loaded values are Nones
-    """
+    """Ensure that if group_by isn't specified, the loaded values are Nones"""
     config = r"""
         [device]
         station = MSU
@@ -226,8 +221,7 @@ def test_missing_group_by():
     ids=["incorrect format", "missing type", "unknown variable", "unknown type"],
 )
 def test_group_by_errors(group_by):
-    """Ensure that if group_by is specified, it is correctly formatted
-    """
+    """Ensure that if group_by is specified, it is correctly formatted"""
     config = r"""
             [device]
             station = MSU
