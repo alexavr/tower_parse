@@ -3,7 +3,7 @@ import importlib
 from io import StringIO
 import pytest
 import readport
-from readport import load_config, ConfigurationError
+from readport import Group, load_config, ConfigurationError
 
 
 def test_load_config():
@@ -12,13 +12,14 @@ def test_load_config():
     config = r"""
         [device]
         station = MSU
-        name = Test1
+        name = Test
         host = 127.0.0.1
         port = 4001
         timeout = 30
 
         [parser]
-        regex = ^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+).*$
+        regex = ^(?P<level>\S+) RH= *(?P<rh>\S+) %RH T= *(?P<temp>\S+) .C\s*$
+        group_by = level:int
         pack_length = 12000
         destination = ./data/
 
@@ -31,14 +32,14 @@ def test_load_config():
         conf = load_config(f)
 
     assert conf.station == "MSU"
-    assert conf.device == "Test1"
+    assert conf.device == "Test"
     assert conf.host == "127.0.0.1"
     assert conf.port == 4001
     assert conf.timeout == 30
     assert (
-        conf.regex
-        == br"^x= *(?P<u>\S+) y= *(?P<v>\S+) z= *(?P<w>\S+) T= *(?P<temp>\S+).*$"
+        conf.regex == br"^(?P<level>\S+) RH= *(?P<rh>\S+) %RH T= *(?P<temp>\S+) .C\s*$"
     )
+    assert conf.group == Group(by="level", dtype="int")
     assert conf.pack_length == 12000
     assert conf.dest_dir == "./data/"
     assert conf.log_level == "DEBUG"
@@ -67,7 +68,7 @@ def test_config_no_timeout():
     config = r"""
         [device]
         station = MSU
-        name = Test1
+        name = Test
         host = 127.0.0.1
         port = 4001
         #timeout = 30
@@ -106,7 +107,7 @@ def test_regex_error(regex):
     config = r"""
         [device]
         station = MSU
-        name = Test1
+        name = Test
         host = 127.0.0.1
         port = 4001
         timeout = 30
@@ -134,7 +135,7 @@ def test_regex_no_advanced():
     config = r"""
         [device]
         station = MSU
-        name = Test1
+        name = Test
         host = 127.0.0.1
         port = 4001
         timeout = 30
@@ -162,7 +163,7 @@ def test_regex_advanced():
     config = r"""
         [device]
         station = MSU
-        name = Test1
+        name = Test
         host = 127.0.0.1
         port = 4001
         timeout = 30
@@ -176,8 +177,75 @@ def test_regex_advanced():
         level = DEBUG
         file = readport_${device:port}.log
     """
-    pytest.importorskip("regex", reason="Please pip install regex")
+    pytest.importorskip("regex", reason="For this test: pip install regex")
 
     readport.re = importlib.import_module("regex")
     with StringIO(config) as f:
         load_config(f)  # no exception should be raised
+
+
+def test_missing_group_by():
+    """Ensure that if group_by isn't specified, the loaded values are Nones
+    """
+    config = r"""
+        [device]
+        station = MSU
+        name = Test
+        host = 127.0.0.1
+        port = 4001
+        timeout = 30
+
+        [parser]
+        regex = ^(?P<level>\S+) RH= *(?P<rh>\S+) %RH T= *(?P<temp>\S+) .C\s*$
+        # group_by = 
+        pack_length = 12000
+        destination = ./data/
+
+        [logging]
+        level = DEBUG
+        file = readport_${device:port}.log
+    """
+    with StringIO(config) as f:
+        conf = load_config(f)
+
+    assert conf.group == Group()
+
+
+@pytest.mark.parametrize(
+    "group_by",
+    [
+        # if provided, group_by must be in the format <variable>:<type>
+        "level",
+        # if group_by is provided, the data type must also be specified
+        "level:",
+        # group_by must be set to one of the named capture groups from the regex
+        "something_else:int",
+        # the data type must be set to one of the allowed values
+        "level:object",
+    ],
+    ids=["incorrect format", "missing type", "unknown variable", "unknown type"],
+)
+def test_group_by_errors(group_by):
+    """Ensure that if group_by is specified, it is correctly formatted
+    """
+    config = r"""
+            [device]
+            station = MSU
+            name = Test
+            host = 127.0.0.1
+            port = 4001
+            timeout = 30
+
+            [parser]
+            regex = ^(?P<level>\S+) RH= *(?P<rh>\S+) %RH T= *(?P<temp>\S+) .C\s*$
+            group_by = {group_by}
+            pack_length = 12000
+            destination = ./data/
+
+            [logging]
+            level = DEBUG
+            file = readport_${{device:port}}.log
+        """
+    with StringIO(config.format(group_by=group_by)) as f:
+        with pytest.raises(ConfigurationError):
+            load_config(f)

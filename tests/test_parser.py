@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 import numpy as np
 import pytest
-from readport import Item, Parser, ParseError
+from readport import Group, Item, Parser, ParseError
 
 
 @pytest.mark.parametrize(
@@ -24,7 +24,7 @@ def test_parser_extract(regex):
     expected = dict(u=0.079, v=-0.102, w=0.095, temp=14.94, time=timestamp)
 
     item = Item(data, timestamp, False)
-    parser = Parser(regex, 0, "")
+    parser = Parser(regex, group=Group(), pack_length=0, dest="")
     got = parser.extract(item)
     assert got == expected
 
@@ -35,7 +35,7 @@ def test_parser_extract_incomplete(caplog):
     data = b"M,+014.94,0000001,\x030F\r\n"
     regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
-    parser = Parser(regex, 0, "")
+    parser = Parser(regex, group=Group(), pack_length=0, dest="")
     with pytest.raises(ParseError):
         item = Item(data, time.time(), True)
         parser.extract(item)
@@ -47,9 +47,11 @@ def test_parser_extract_incomplete(caplog):
     ]
     assert len(log) == 1
 
-    with pytest.raises(ParseError):
+    with pytest.raises(ParseError) as exc_info:
         item = Item(data, time.time(), False)
         parser.extract(item)
+
+    assert isinstance(exc_info.value.args[0], AttributeError)
 
     log = [
         rec.message
@@ -66,17 +68,19 @@ def test_parser_extract_cast_error():
     regex = br"^.+,(?P<u>[^,]+),(?P<v>[^,]+),(?P<w>[^,]+),.,(?P<temp>[^,]+),.+$"
 
     item = Item(data, time.time(), False)
-    parser = Parser(regex, 0, "")
-    with pytest.raises(ParseError):
+    parser = Parser(regex, group=Group(), pack_length=0, dest="")
+    with pytest.raises(ParseError) as exc_info:
         parser.extract(item)
 
+    assert isinstance(exc_info.value.args[0], ValueError)
 
-def test_parser_extract_duplicate_group():
+
+def test_parser_extract_same_name():
     """Check that if regex is installed, the parser can extract a similar set of
     variables from two completely different string formats. Specifically, the same name
-    can be used by more than one group.
+    can be used by more than one regex capture group.
     """
-    pytest.importorskip("regex", reason="Please pip install regex")
+    pytest.importorskip("regex", reason="For this test: pip install regex")
 
     data = [
         b"01 RH= 1.23 %RH T= 14.94 'C \r\n",
@@ -94,9 +98,30 @@ def test_parser_extract_duplicate_group():
 
     for inp, exp in zip(data, expected):
         item = Item(inp, timestamp, False)
-        parser = Parser(regex, 0, "")
+        parser = Parser(regex, group=Group(), pack_length=0, dest="")
         got = parser.extract(item)
         assert got == exp
+
+
+def test_parser_extract_group_by():
+    regex = br"^(?P<level>\S+) RH= *(?P<rh>\S+) %RH T= *(?P<temp>\S+) .C\s*$"
+    data = b"01 RH= 1.23 %RH T= 14.94 'C \r\n"
+    timestamp = time.time()
+    types = ["int", "float", "str"]
+    expected = [
+        dict(level=1, rh=1.23, temp=14.94, time=timestamp),
+        dict(level=1.0, rh=1.23, temp=14.94, time=timestamp),
+        dict(level="01", rh=1.23, temp=14.94, time=timestamp),
+    ]
+
+    item = Item(data, timestamp, False)
+    for dtype, exp in zip(types, expected):
+        parser = Parser(
+            regex, group=Group(by="level", dtype=dtype), pack_length=0, dest=""
+        )
+        got = parser.extract(item)
+        assert got == exp
+        assert isinstance(got["level"], type(exp["level"]))
 
 
 def test_parser_write_ok(tmp_path):
@@ -106,16 +131,16 @@ def test_parser_write_ok(tmp_path):
     pack_length = 2
 
     # Use microseconds and a unique file identifier
-    dest = tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
+    dest = tmp_path / "data" / "MSU_Test{group}_{date:%H-%M-%S-%f}.npz"
     microsecond = 0.000001
 
     # Two complete files expected as output:
-    n_iters = 2
-    buffers = [defaultdict(list) for _ in range(n_iters)]
+    n_iter = 2
+    buffers = [defaultdict(list) for _ in range(n_iter)]
 
-    parser = Parser(regex=b"", pack_length=pack_length, dest=dest)
+    parser = Parser(regex=b"", group=Group(), pack_length=pack_length, dest=dest)
 
-    for i in range(n_iters):
+    for i in range(n_iter):
         for _ in range(pack_length):
             variables = {var: random.uniform(-10, 10) for var in all_vars}
             parser.write(variables)
@@ -129,7 +154,7 @@ def test_parser_write_ok(tmp_path):
 
     files = sorted([str(p) for p in tmp_path.glob("**/*") if p.is_file()])
 
-    assert len(files) == n_iters
+    assert len(files) == n_iter
     for i, file in enumerate(files):
         with np.load(file) as data:
             for var in all_vars:
@@ -144,14 +169,16 @@ def test_parser_write_inconsistent_vars(tmp_path):
     variables = {var: 1.0 for var in ["u", "v", "w", "time"]}
 
     pack_length = 2
-    dest = tmp_path / "data" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
+    dest = tmp_path / "data" / "MSU_Test{group}_{date:%H-%M-%S-%f}.npz"
 
-    parser = Parser(regex=b"", pack_length=pack_length, dest=dest)
-    with pytest.raises(ParseError):
+    parser = Parser(regex=b"", group=Group(), pack_length=pack_length, dest=dest)
+    with pytest.raises(ParseError) as exc_info:
         parser.write(variables)
         # Remove one of the variables, which should cause an error
         del variables["u"]
         parser.write(variables)
+
+    assert isinstance(exc_info.value.args[0], AssertionError)
 
 
 def test_parser_write_mkdir_failed():
@@ -161,8 +188,59 @@ def test_parser_write_mkdir_failed():
 
     pack_length = 1
     # Use the /TEST directory to cause a permission problem
-    dest = Path("/") / "TEST" / "MSU_Test1_{date:%H-%M-%S-%f}.npz"
+    dest = Path("/") / "TEST" / "MSU_Test{group}_{date:%H-%M-%S-%f}.npz"
 
-    parser = Parser(regex=b"", pack_length=pack_length, dest=dest)
-    with pytest.raises(ParseError):
+    parser = Parser(regex=b"", group=Group(), pack_length=pack_length, dest=dest)
+    with pytest.raises(ParseError) as exc_info:
         parser.write(variables)
+
+    assert isinstance(exc_info.value.args[0], OSError)
+
+
+def test_parser_write_group_by(tmp_path):
+    """Ensure that group_by files are written properly
+    """
+    data = [
+        dict(level=1, rh=1.23, temp=14.85, time=time.time()),
+        dict(level=2, rh=2.23, temp=11.85, time=time.time()),
+        dict(level=1, rh=1.35, temp=14.97, time=time.time()),
+        dict(level=2, rh=2.35, temp=11.97, time=time.time()),
+    ]
+    levels = {d["level"] for d in data}
+    all_vars = {key for d in data for key in d.keys()}
+    pack_length = 2
+
+    # Use microseconds and a unique file identifier
+    dest = tmp_path / "data" / "MSU_Test{group}_{date:%H-%M-%S-%f}.npz"
+    microsecond = 0.000001
+
+    # Two complete files expected as output:
+    buffers = {level: defaultdict(list) for level in levels}
+
+    parser = Parser(
+        regex=b"",
+        group=Group(by="level", dtype="float"),
+        pack_length=pack_length,
+        dest=dest,
+    )
+
+    for variables in data:
+        parser.write(variables)
+
+        for var, value in variables.items():
+            level = variables["level"]
+            buffers[level][var].append(value)
+
+        # Make sure that the whole iteration is at least 1 microsecond long
+        time.sleep(microsecond)
+
+    files = sorted([str(p) for p in tmp_path.glob("**/*") if p.is_file()])
+
+    assert len(files) == len(levels)
+    for level in levels:
+        file = [f for f in files if "Test{}".format(level) in f][0]
+        with np.load(file) as data:
+            for var in all_vars:
+                expected = np.array(buffers[level][var])
+                assert np.array_equal(data[var], expected)
+                assert data[var].dtype == expected.dtype
