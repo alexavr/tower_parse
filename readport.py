@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.5
+#!/usr/bin/env python
 
 import argparse
 import configparser
@@ -95,9 +95,7 @@ class TCPClient:
         # Close any previously open socket-associated file descriptors
         self.close()
 
-        logging.info(
-            "Attempting to connect to socket at {}:{}...".format(self.host, self.port)
-        )
+        logging.info(f"Attempting to connect to socket at {self.host}:{self.port}...")
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.settimeout(self.timeout)
 
@@ -108,9 +106,8 @@ class TCPClient:
                 time.sleep(1)
             else:
                 logging.info(
-                    "Connected to {}:{}. Ready to receive device data...".format(
-                        self.host, self.port
-                    )
+                    f"Connected to {self.host}:{self.port}. "
+                    f"Ready to receive device data..."
                 )
                 # Obtain a file descriptor capable of reading line by line
                 self._fd = self._sock.makefile(mode="rb")
@@ -140,9 +137,7 @@ class TCPClient:
             # Make the timeout message more elaborate instead of the default "timed out"
             if isinstance(e, socket.timeout):
                 e = OSError(
-                    "Read timed out. No messages received in {} seconds.".format(
-                        self.timeout
-                    )
+                    f"Read timed out. No messages received in {self.timeout} seconds."
                 )
             raise e
 
@@ -224,13 +219,12 @@ class Group:
         if self.by is not None:
             if self.by not in variables:
                 raise ConfigurationError(
-                    "group_by variable must by one of: {}".format(", ".join(variables))
+                    f"group_by variable must by one of: {', '.join(variables)}"
                 )
             if self.cast is None:
                 raise ConfigurationError(
-                    "group_by type must be set to one of: {}".format(
-                        ", ".join(self.types.keys())
-                    )
+                    f"group_by type must be set to one of: "
+                    f"{', '.join(self.types.keys())}"
                 )
 
 
@@ -261,8 +255,9 @@ class Buffer:
         buf = self._buf.get(group_value)
         if buf:
             assert extracted.keys() == buf.keys(), (
-                "Cannot buffer the supplied variables. Expected {}, but got {}"
-            ).format(sorted(buf.keys()), sorted(extracted.keys()))
+                f"Cannot buffer the supplied variables. "
+                f"Expected {sorted(buf.keys())}, but got {sorted(extracted.keys())}"
+            )
 
             # Checking the length of "time" doesn't alter the buffer, since the variable
             # must already be in it:
@@ -357,16 +352,16 @@ class Parser:
             if item.fresh_connection:
                 # We expect the very first message received upon establishing
                 # a connection to be incomplete quite often.
-                logging.debug("Possibly incomplete first message: {}".format(item.data))
+                logging.debug(f"Possibly incomplete first message: {item.data}")
             else:
-                logging.error("Cannot parse a complete message: {}".format(item.data))
+                logging.error(f"Cannot parse a complete message: {item.data}")
             raise ParseError(e)
         except Exception as e:
             logging.error(e)
             raise ParseError(e)
         else:
             extracted["time"] = item.timestamp
-            logging.debug("Got {}".format(extracted))
+            logging.debug(f"Got {extracted}")
 
         return extracted
 
@@ -406,13 +401,12 @@ class Parser:
                 tmp_file.rename(target)
             except Exception as e:
                 logging.error(
-                    "Saving failed: {}. {:,} data points will be lost.".format(
-                        e, self._buffer.pack_length
-                    )
+                    f"Saving failed: {e}. "
+                    f"{self._buffer.pack_length:,} data points will be lost."
                 )
                 raise ParseError(e)
             else:
-                logging.info("Data saved to '{}'".format(target))
+                logging.info(f"Data saved to '{target}'")
             finally:
                 # Reset the in-memory storage
                 self._buffer.clear(group_value)
@@ -587,7 +581,7 @@ def validate_regex(regex: bytes) -> AbstractSet[str]:
                 e.args[0] + "\nTo support such advanced regex functionality, "
                 "please `pip install regex`.",
             ) + e.args[1:]
-        raise ConfigurationError("regex: {}".format(e))
+        raise ConfigurationError(f"regex: {e}")
 
     if pattern.groups != len(pattern.groupindex):
         raise ConfigurationError("all of the regex capture groups must be named")
@@ -634,13 +628,13 @@ def main():
         with open(args.config) as f:
             conf = load_config(f)
     except Exception as e:
-        print("Failed to load configuration: {}".format(e))
+        print(f"Failed to load configuration: {e}")
         sys.exit(1)
 
     # Set up logging to the console and the log-files
     log_level = "DEBUG" if args.debug else conf.log_level
     configure_logging(level=log_level, file=conf.log_file)
-    logging.info("Logging to the file '{}'".format(conf.log_file))
+    logging.info(f"Logging to the file '{conf.log_file}'")
 
     # Ignore Ctrl-C in subprocesses
     signal.signal(signal.SIGINT, signal.SIG_IGN)

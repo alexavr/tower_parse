@@ -1,11 +1,9 @@
 name: tower_client
-channels:
-  - defaults
 dependencies:
-  # Python 3.5 is used in production (ASUS Tinker Board)
-  - python=3.5
+  - python>=3.6
   - numpy
+  - regex  # optional, enables advanced regex
+  - pytest  # only for development & testing
   - pip
   - pip:
-    # pip has the latest pytest supporting Python 3.5
-    - pytest
+      - black  # code formatting during development

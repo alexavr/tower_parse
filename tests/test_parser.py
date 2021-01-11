@@ -287,7 +287,7 @@ def test_parser_write_group_by(tmp_path):
 
     assert len(files) == len(levels)
     for level in levels:
-        file = [f for f in files if "Test{}".format(level) in f][0]
+        file = [f for f in files if f"Test{level}" in f][0]
         with np.load(file) as data:
             for var in all_vars:
                 expected = np.array(buffers[level][var])
