@@ -21,7 +21,7 @@ from datetime import datetime
 from multiprocessing import Process, Queue, Event
 from pathlib import Path
 from queue import Empty, Full
-from typing import AbstractSet, Any, Dict, Optional, TextIO, Tuple, Union
+from typing import AbstractSet, Any, Dict, Iterator, Optional, TextIO, Tuple, Union
 
 import numpy as np
 
@@ -277,7 +277,7 @@ class Buffer:
         for var, value in extracted.items():
             buf[var].append(value)
 
-    def full(self) -> Tuple[Any, Dict[str, Any]]:
+    def full(self) -> Iterator[Tuple[Any, Dict[str, Any]]]:
         """Iterate over the groups that have reached the packing limit
 
         Yields:
