@@ -4,11 +4,16 @@ import argparse
 import configparser
 import logging
 import logging.handlers
-import re
 import signal
 import socket
 import sys
 import time
+
+try:
+    # To enable advanced regular expressions: `pip install regex`
+    import regex as re
+except ImportError:
+    import re
 
 from ast import literal_eval
 from collections import defaultdict, namedtuple
@@ -16,6 +21,7 @@ from datetime import datetime
 from multiprocessing import Process, Queue, Event
 from pathlib import Path
 from queue import Empty, Full
+from typing import AbstractSet, Any, Dict, Optional, TextIO, Tuple, Union
 
 import numpy as np
 
@@ -33,7 +39,11 @@ class ConfigurationError(Exception):
     """An exception thrown when the config file is incorrectly specified"""
 
 
-def signal_handler(sig, frame):
+class ParseError(Exception):
+    """An exception raised when the parser fails to process data or save it to disk"""
+
+
+def signal_handler(sig, frame):  # noqa
     """A handler for the Ctrl-C event and the TERM signal."""
     if shutdown.is_set() or sig == signal.SIGTERM:
         # Terminate immediately
@@ -52,7 +62,7 @@ def signal_handler(sig, frame):
 class TCPClient:
     """A TCP socket connection that reads newline-delimited messages."""
 
-    def __init__(self, host, port, timeout=None):
+    def __init__(self, host: str, port: int, timeout: Optional[float] = None):
         """Initialize the socket connection class.
 
         Args:
@@ -74,15 +84,14 @@ class TCPClient:
         self.close()
 
     @property
-    def fresh(self):
+    def fresh(self) -> bool:
         """Indicates whether the connection is fresh, i.e. no data has been
         received over the socket yet.
         """
         return self._fresh
 
     def connect(self):
-        """Establish socket connection, retrying if necessary
-        """
+        """Establish socket connection, retrying if necessary"""
         # Close any previously open socket-associated file descriptors
         self.close()
 
@@ -95,7 +104,7 @@ class TCPClient:
         while not shutdown.is_set():
             try:
                 self._sock.connect((self.host, self.port))
-            except Exception:
+            except OSError:
                 time.sleep(1)
             else:
                 logging.info(
@@ -111,7 +120,7 @@ class TCPClient:
 
         # Shutting down before connection could be established
 
-    def readline(self):
+    def readline(self) -> bytes:
         """Read complete messages ending in "\n". If a partial message is received,
         buffer and wait for the remainder before continuing. If multiple joined
         messages are obtained, split them into individual records.
@@ -119,9 +128,9 @@ class TCPClient:
         Returns:
             data: a binary string
 
-        Rases:
+        Raises:
             OSError: propagate errors and empty messages as exceptions. There is no such
-            thing as an empty message in TCP, so zero length means a peer disconnect.
+                thing as an empty message in TCP, so zero length means a peer disconnect.
         """
         try:
             data = self._fd.readline()
@@ -150,36 +159,176 @@ class TCPClient:
             if self._sock:
                 self._sock.shutdown(socket.SHUT_RDWR)
                 self._sock.close()
-        except Exception:
+        except OSError:
             pass
+        finally:
+            self._fd = None
+            self._sock = None
 
-        self._fd = None
-        self._sock = None
+
+class Group:
+    """Encapsulation of group_by related settings"""
+
+    types = dict(int=int, float=float, str=lambda x: x.decode())
+
+    def __init__(self, by: Optional[str] = None, dtype: Optional[str] = None):
+        """Initialize the Group
+
+        Args:
+            by: the name of the grouping variable
+            dtype: the data type of the grouping variable
+        """
+        self.by = by
+        self.cast = self.types.get(dtype)
+
+    @classmethod
+    def from_config(cls, group_by: Union[str, None]) -> "Group":
+        """Initialize the Group based on the configuration file value
+
+        Args:
+            group_by: the option value from the config
+
+        Returns:
+            group: an initialized instance of Group
+
+        Raises:
+            ConfigurationError: in case of ill-formatted group_by setting
+        """
+        by, dtype = None, None
+        if group_by is not None:
+            try:
+                by, dtype = group_by.split(":")
+            except ValueError:
+                raise ConfigurationError(
+                    "group_by must be in the format <variable>:<type>"
+                )
+        return cls(by, dtype)
+
+    def __eq__(self, other: "Group"):
+        """Test Group objects for equality"""
+        if not isinstance(other, Group):
+            # don't attempt to compare against unrelated types
+            return NotImplemented
+        return self.by == other.by and self.cast == other.cast
+
+    def validate(self, variables: AbstractSet[str]):
+        """Ensure that the Group variables are correctly specified
+
+        Args:
+            variables: the set of known variable names extracted by the regex
+
+        Raises:
+            ConfigurationError: if either group_by is not present in the set of extracted
+                variable names, or the type is missing or specified incorrectly
+        """
+        if self.by is not None:
+            if self.by not in variables:
+                raise ConfigurationError(
+                    "group_by variable must by one of: {}".format(", ".join(variables))
+                )
+            if self.cast is None:
+                raise ConfigurationError(
+                    "group_by type must be set to one of: {}".format(
+                        ", ".join(self.types.keys())
+                    )
+                )
+
+
+class Buffer:
+    """A buffer that collects extracted variables by group, up to a packing limit"""
+
+    def __init__(self, pack_length: int, group_by: Optional[str] = None):
+        """Initialize the Buffer
+
+        Args:
+            pack_length: the number of records to save in each file
+            group_by: the name of the grouping variable (default: None)
+        """
+        self.pack_length = pack_length
+        self.group_by = group_by
+        self._buf = dict()
+
+    def put(self, extracted: Dict[str, Any]):
+        """Collect the data separately for each of the groups, up to a packing limit
+
+        Args:
+            extracted: a dict of variable-value pairs, including the timestamp
+
+        Raises:
+            AssertionError: if basic consistency checks fail
+        """
+        group_value = extracted.get(self.group_by)
+        buf = self._buf.get(group_value)
+        if buf:
+            assert extracted.keys() == buf.keys(), (
+                "Cannot buffer the supplied variables. Expected {}, but got {}"
+            ).format(sorted(buf.keys()), sorted(extracted.keys()))
+
+            # Checking the length of "time" doesn't alter the buffer, since the variable
+            # must already be in it:
+            assert "time" in buf, "'time' must be among supplied variables"
+            assert (
+                len(buf["time"]) < self.pack_length
+            ), "Cannot add to a buffer that is already full"
+        else:
+            buf = self._buf[group_value] = defaultdict(list)
+
+        # Collect the extracted values
+        for var, value in extracted.items():
+            buf[var].append(value)
+
+    def full(self) -> Tuple[Any, Dict[str, Any]]:
+        """Iterate over the groups that have reached the packing limit
+
+        Yields:
+            group_value: the value of the group that has pack_length items buffered
+            buf: a dict of variable-list pairs, where each list is a vector of
+                pack_length values.
+        """
+        for group_value, buf in self._buf.items():
+            # Avoid creating an empty "time" variable when checking its length
+            timestamps = buf.get("time")
+            if timestamps and len(timestamps) == self.pack_length:
+                yield group_value, buf
+
+    def clear(self, group_value: Any):
+        """Reset the in-memory buffer for a particular group
+
+        Args:
+            group_value: the value of the group to reset and start over
+        """
+        self._buf[group_value].clear()
 
 
 class Parser:
     """An implementation of the parser which extracts variables from the device
-    binary messages and writes them periodically to disc."""
+    binary messages and writes them periodically to disk."""
 
     def __init__(
-        self, regex, var_names, multiplier, pack_length, destination,
+        self,
+        regex: bytes,
+        group: Group,
+        pack_length: int,
+        dest: Union[str, Path],
     ):
         """Initialize the parser
 
         Args:
-            regex, var_names, multiplier, pack_length: values from the config file
-            destination: the target filename where to save the data, with an optional
+            regex: regular expression for variable extraction
+            group: an instance of Group, containing group_by related settings
+            pack_length: the number of records to save in each file
+            dest: the target filename where to save the data, with an optional
                 "{date}" placeholder for the current date and time.
         """
         self.regex = regex
-        self.var_names = var_names
-        self.all_vars = set(var_names + ["time"])
-        self.multiplier = multiplier
-        self.pack_length = pack_length
-        self.destination = destination
-        self._buffer = defaultdict(list)
+        self.group = group
+        self.dest = dest
+        self._buffer = Buffer(pack_length, group.by)
+        # Convert all variables to float, except for the group.by variable, if any
+        self._cast = defaultdict(lambda: float)
+        self._cast[group.by] = group.cast
 
-    def extract(self, item):
+    def extract(self, item: Item) -> Dict[str, Any]:
         """Extract variables from the binary device data
 
         Args:
@@ -187,21 +336,23 @@ class Parser:
                 connection flag
 
         Returns:
-            variables: a dict of variable-values pairs, including the timestamp
+            extracted: a dict of variable-value pairs, including the timestamp
 
         Raises:
             AttributeError: when no match is found by the regex
-            ValueError: when conversion of the extracted value to a float fails
-            AssertionError: if the number of extracted values and var_names differ
+            ValueError or UnicodeDecodeError: type conversion of extracted values fails
             re.error: for other types of regex errors
         """
         try:
             match = re.match(self.regex, item.data)
-            values = [float(value) * self.multiplier for value in match.groups()]
-            assert len(values) == len(self.var_names), (
-                "Regex extracted {} values, but {} var_names are specified"
-            ).format(len(values), len(self.var_names))
-        except AttributeError:
+            # Collect the results, converting to appropriate data types and filtering out
+            # capture groups that didn't match
+            extracted = {
+                key: self._cast[key](value)
+                for key, value in match.groupdict().items()
+                if value is not None
+            }
+        except AttributeError as e:
             # The regex pattern produced no match
             if item.fresh_connection:
                 # We expect the very first message received upon establishing
@@ -209,66 +360,65 @@ class Parser:
                 logging.debug("Possibly incomplete first message: {}".format(item.data))
             else:
                 logging.error("Cannot parse a complete message: {}".format(item.data))
-            raise
+            raise ParseError(e)
         except Exception as e:
             logging.error(e)
-            raise
+            raise ParseError(e)
         else:
-            variables = dict(zip(self.var_names, values))
-            variables["time"] = item.timestamp
-            logging.debug("Got {}".format(variables))
+            extracted["time"] = item.timestamp
+            logging.debug("Got {}".format(extracted))
 
-        return variables
+        return extracted
 
-    def write(self, variables):
-        """Write the variables to an internal buffer, which is saved to disk
+    def write(self, extracted: Dict[str, Any]):
+        """Write the extracted variables to an internal buffer, which is saved to disk
         when pack_length is reached.
 
         Args:
-            variables: a dict of variable-value pairs, i.e. the output of extract()
+            extracted: a dict of variable-value pairs, i.e. the output of extract()
 
         Raises:
-            AssertionError: if the supplied variables differ from var_names + "time"
-            Other exceptions: for filesystem-related and Numpy issues.
+            AssertionError: if the supplied variables differ from those previously saved
+            Other exceptions: for filesystem-related and NumPy issues.
         """
         try:
-            # Ensure that variable names are consistent across all messages
-            all_vars = set(variables.keys())
-            assert all_vars == self.all_vars, (
-                "Cannot save the supplied variables. Expected {}, but got {}"
-            ).format(sorted(self.all_vars), sorted(all_vars))
+            self._buffer.put(extracted)
         except AssertionError as e:
             logging.error(e)
-            raise
-
-        # Collect the extracted values
-        for var, value in variables.items():
-            self._buffer[var].append(value)
+            raise ParseError(e)
 
         # Save the data to disk when the packing limit is reached
-        if len(self._buffer["time"]) == self.pack_length:
+        for group_value, vectors in self._buffer.full():
             try:
-                # Make sure the target directory exists
-                p = Path(self.destination.format(date=datetime.utcnow()))
-                p.parent.mkdir(parents=True, exist_ok=True)
+                # Make sure the destination directory exists
+                group = group_value if group_value is not None else ""
+                target = Path(
+                    str(self.dest).format(group=group, date=datetime.utcnow())
+                )
+                target.parent.mkdir(parents=True, exist_ok=True)
 
-                # Save the variables to a compressed Numpy file with a current timestamp
-                np.savez_compressed(p, **self._buffer)
+                # Save the variables to a temporary file
+                tmp_file = target.with_suffix(".tmp")
+                with tmp_file.open(mode="wb") as f:
+                    np.savez_compressed(f, **vectors)
+
+                # Rename to ".npz" to make `rsync --remove-source-files` safe
+                tmp_file.rename(target)
             except Exception as e:
                 logging.error(
                     "Saving failed: {}. {:,} data points will be lost.".format(
-                        e, self.pack_length
+                        e, self._buffer.pack_length
                     )
                 )
-                raise
+                raise ParseError(e)
             else:
-                logging.info("Data saved to '{}'".format(p))
+                logging.info("Data saved to '{}'".format(target))
             finally:
                 # Reset the in-memory storage
-                self._buffer.clear()
+                self._buffer.clear(group_value)
 
 
-def listen_device(queue, host, port, timeout):
+def listen_device(queue: Queue, host: str, port: int, timeout: Optional[float] = None):
     """Receive messages from the device over a TCP socket and queue them
     for parallel processing.
 
@@ -276,7 +426,7 @@ def listen_device(queue, host, port, timeout):
         queue: a multiprocessing queue to send data to
         host: IP address of the device
         port: integer port number to listen to
-        timeout: a timeout in seconds for connecting and reading data
+        timeout: a timeout in seconds for connecting and reading data (default: None)
     """
     with TCPClient(host, port, timeout) as client:
         # Establish socket connection to the device
@@ -311,16 +461,20 @@ def listen_device(queue, host, port, timeout):
                 shutdown.set()
 
 
-def process_data(queue, regex, var_names, multiplier, pack_length, destination):
+def process_data(
+    queue: Queue, regex: bytes, group: Group, pack_length: int, dest: Union[str, Path]
+):
     """Take messages from the queue, parse them and periodically save to disk.
 
     Args:
         queue: a multiprocessing queue to read messages from
-        regex, var_names, multiplier, pack_length: values from the config file
-        destination: the target filename where to save the data, with an optional
+        regex: regular expression for variable extraction
+        group: an instance of Group, containing group_by related settings
+        pack_length: the number of records to save in each file
+        dest: the target filename where to save the data, with an optional
             "{date}" placeholder for the current date and time.
     """
-    parser = Parser(regex, var_names, multiplier, pack_length, destination)
+    parser = Parser(regex, group, pack_length, dest)
 
     # Loop until a shutdown flag is set and all items in the queue have been received
     while not (shutdown.is_set() and queue.empty()):
@@ -333,11 +487,11 @@ def process_data(queue, regex, var_names, multiplier, pack_length, destination):
         try:
             variables = parser.extract(item)
             parser.write(variables)
-        except Exception:
+        except ParseError:
             continue
 
 
-def read_cmdline():
+def read_cmdline() -> argparse.Namespace:
     """Parse the command-line arguments.
 
     Returns:
@@ -347,13 +501,21 @@ def read_cmdline():
     # For better clarity, add a required block in the description
     required = parser.add_argument_group("required arguments")
     required.add_argument(
-        "-c", "--config", help="path to the configuration file", required=True,
+        "-c",
+        "--config",
+        help="path to the configuration file",
+        required=True,
+    )
+    parser.add_argument(
+        "--debug",
+        help="turn on DEBUG logging (overrides the setting in the config file)",
+        action="store_true",
     )
     args = parser.parse_args()
     return args
 
 
-def load_config(f):
+def load_config(f: TextIO) -> argparse.Namespace:
     """Load the configuration file with correct parameter data types.
 
     Args:
@@ -368,68 +530,91 @@ def load_config(f):
     )
     config.read_file(f)
 
-    def read_bytes(section, option):
-        """Read an option from the config file as bytes"""
-        value = config.get(section, option, raw=True)
-        return literal_eval("b'{}'".format(value))
+    # Read regex as a byte-string
+    regex = literal_eval("b'{}'".format(config.get("parser", "regex", raw=True)))
+    variables = validate_regex(regex)
 
-    # Handle the special ${date} variable
-    date_format = config.get("parser", "date_format")
-    config["DEFAULT"]["date"] = "{{date:{}}}".format(date_format)
+    # Load group_by related options
+    group = Group.from_config(config.get("parser", "group_by", fallback=None))
+    group.validate(variables)
+
+    # Hardcode the filename template, with {group} and {date} to be substituted when
+    # writing to disk.
+    config["DEFAULT"][
+        "filename"
+    ] = "${device:station}_${device:name}{group}_{date:%Y-%m-%d_%H-%M-%S}.npz"
 
     # Flatten the structure and convert the types of the parameters
     conf = dict(
-        station_name=config.get("device", "station_name"),
-        device_name=config.get("device", "device_name"),
+        station=config.get("device", "station"),
+        device=config.get("device", "name"),
         host=config.get("device", "host"),
         port=config.getint("device", "port"),
         timeout=config.getint("device", "timeout", fallback=None),
-        regex=read_bytes("parser", "regex"),
-        var_names=config.get("parser", "var_names").split(),
-        multiplier=config.getfloat("parser", "multiplier"),
+        regex=regex,
+        group=group,
         pack_length=config.getint("parser", "pack_length"),
-        destination=config.get("parser", "destination"),
-        log_level=config.get("logging", "log_level"),
-        log_file=config.get("logging", "log_file"),
+        dest_dir=config.get("parser", "destination"),
+        filename=config.get("DEFAULT", "filename"),
+        log_level=config.get("logging", "level"),
+        log_file=config.get("logging", "file"),
     )
 
     # Convert the dictionary to a Namespace object, to enable .attribute access
     conf = argparse.Namespace(**conf)
 
-    # Check if the regular expression is valid
-    try:
-        pattern = re.compile(conf.regex)
-    except re.error as e:
-        raise ConfigurationError("regex: {}".format(e))
-    # Check that all capture groups are named
-    if pattern.groups != len(conf.var_names):
-        raise ConfigurationError(
-            "mismatch between the number of regex capture groups and var_names"
-        )
-
-    # Ensure that "time" isn't used as a var_name in the config file
-    if "time" in conf.var_names:
-        raise ConfigurationError(
-            "'time' is reserved for the message timestamp "
-            "and cannot be listed in var_names"
-        )
-
     return conf
 
 
-def configure_logging(log_level, log_file):
+def validate_regex(regex: bytes) -> AbstractSet[str]:
+    """Check if the regular expression is valid
+
+    Args:
+        regex: regular expression for variable extraction
+
+    Returns:
+        variables: a set of variable names captured by the regex
+
+    Raises:
+        ConfigurationError: in case of obvious issues with the regex
+    """
+    try:
+        pattern = re.compile(regex)
+    except re.error as e:
+        # Additional functionality is supported with a 3rd-party regex module, e.g.:
+        if "redefinition of group name" in e.msg:
+            e.args = (
+                e.args[0] + "\nTo support such advanced regex functionality, "
+                "please `pip install regex`.",
+            ) + e.args[1:]
+        raise ConfigurationError("regex: {}".format(e))
+
+    if pattern.groups != len(pattern.groupindex):
+        raise ConfigurationError("all of the regex capture groups must be named")
+
+    # Ensure that "time" isn't used in the regex
+    if "time" in pattern.groupindex:
+        raise ConfigurationError(
+            "don't use 'time' as a regex variable, "
+            "it is reserved for the message timestamp"
+        )
+
+    return pattern.groupindex.keys()
+
+
+def configure_logging(level: str, file: str):
     """Setup rotated logging to the file and the console
 
     Args:
-        log_level: the threshold for the logging system ("INFO", "DEBUG", etc.)
-        log_file: the filename of the log to write to
+        level: the threshold for the logging system ("INFO", "DEBUG", etc.)
+        file: the filename of the log to write to
     """
     root = logging.getLogger()
-    root.setLevel(log_level)
+    root.setLevel(level)
 
     # Setup a rotating log file. At most 5 backup copies are kept, less than 10 MB each.
     handler = logging.handlers.RotatingFileHandler(
-        log_file, mode="a", maxBytes=1e7, backupCount=5
+        file, mode="a", maxBytes=int(1e7), backupCount=5
     )
     formatter = logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s")
     handler.setFormatter(formatter)
@@ -453,7 +638,8 @@ def main():
         sys.exit(1)
 
     # Set up logging to the console and the log-files
-    configure_logging(log_level=conf.log_level, log_file=conf.log_file)
+    log_level = "DEBUG" if args.debug else conf.log_level
+    configure_logging(level=log_level, file=conf.log_file)
     logging.info("Logging to the file '{}'".format(conf.log_file))
 
     # Ignore Ctrl-C in subprocesses
@@ -472,10 +658,9 @@ def main():
         kwargs=dict(
             queue=queue,
             regex=conf.regex,
-            var_names=conf.var_names,
-            multiplier=conf.multiplier,
+            group=conf.group,
             pack_length=conf.pack_length,
-            destination=conf.destination,
+            dest=Path(conf.dest_dir) / conf.filename,
         ),
     )
     global processes

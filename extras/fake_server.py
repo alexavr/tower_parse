@@ -8,7 +8,7 @@ HOST = "127.0.0.1"  # Standard loopback interface address (localhost)
 PORT = 4001  # Port to listen on (non-privileged ports are > 1023)
 
 
-def keyboardInterruptHandler(signal, frame):
+def interrupt_handler(sign, frame):  # noqa
     print("KeyboardInterrupt caught. Exiting")
     exit(0)
 
@@ -22,12 +22,11 @@ class Generator:
         Args:
             broken: if True, send broken messages, split between sends (default: {False})
         """
-        # Return a variable-length message of the form:
-        # b'\x02Q,+000.079,-000.102,+000.095,M,+014.94,0000001,\x030F\r\n'
-        # Note: In the original message from the device, message ID is always "00"
+        # Return variable-length messages of the form:
+        # b'01 RH= +000.079 %RH T= +000.095 'C ID=0000001\r\n'
+        # b'02 RH= -044.919 %RH T= -029.456 'C ID=0000002\r\n'
         self.template = (
-            "\x02Q,{:+0{w}.{p}f},{:+0{w}.{p}f},{:+0{w}.{p}f},"
-            "M,{:+0{w}.{p}f},{message_id:07d},\x03{suffix:02X}\r\n"
+            "{level:02d} RH= {:+0{w}.{p}f} %RH T= {:+0{w}.{p}f} 'C ID={id:07d}\r\n"
         )
         self.message_id = 0
         self.broken = broken
@@ -36,10 +35,10 @@ class Generator:
     def get_data(self):
         precision = random.choice([2, 3])
         width = 5 + precision
-        floats = [random.uniform(-99.99, 99.99) for _ in range(4)]
-        suffix = random.randint(0, 255)
+        level = random.choice([1, 2])
+        floats = [random.uniform(-99.99, 99.99) for _ in range(2)]
         data = self.template.format(
-            *floats, message_id=self.message_id, suffix=suffix, w=width, p=precision
+            *floats, level=level, id=self.message_id, w=width, p=precision
         )
         data = data.encode("ascii")
 
@@ -96,7 +95,7 @@ def read_cmdline():
 
 
 def main():
-    signal.signal(signal.SIGINT, keyboardInterruptHandler)
+    signal.signal(signal.SIGINT, interrupt_handler)
 
     args = read_cmdline()
     frequency, broken = args.frequency, args.broken
@@ -126,7 +125,7 @@ def main():
                     try:
                         conn.sendall(data)
                         time.sleep(delay)
-                    except (BrokenPipeError, ConnectionResetError):
+                    except ConnectionError:
                         print("Connection lost. Waiting for new connection.")
                         break
 
