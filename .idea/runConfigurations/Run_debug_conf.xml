@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Run debug.conf" type="CompoundRunConfigurationType">
+    <toRun name="fake_server" type="PythonConfigurationType" />
+    <toRun name="readport" type="PythonConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>
