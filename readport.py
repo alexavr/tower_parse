@@ -45,7 +45,7 @@ class ParseError(Exception):
     """An exception raised when the parser fails to process data or save it to disk"""
 
 
-def signal_handler(sig, frame):  # noqa
+def signal_handler(sig, frame) -> None:  # noqa
     """A handler for the Ctrl-C event and the TERM signal."""
     if shutdown.is_set() or sig == signal.SIGTERM:
         # Terminate immediately
@@ -64,7 +64,7 @@ def signal_handler(sig, frame):  # noqa
 class TCPClient:
     """A TCP socket connection that reads newline-delimited messages."""
 
-    def __init__(self, host: str, port: int, timeout: Optional[float] = None):
+    def __init__(self, host: str, port: int, timeout: Optional[float] = None) -> None:
         """Initialize the socket connection class.
 
         Args:
@@ -92,7 +92,7 @@ class TCPClient:
         """
         return self._fresh
 
-    def connect(self):
+    def connect(self) -> None:
         """Establish socket connection, retrying if necessary"""
         # Close any previously open socket-associated file descriptors
         self.close()
@@ -148,7 +148,7 @@ class TCPClient:
 
         return data
 
-    def close(self):
+    def close(self) -> None:
         """Close all socket-associated handles."""
         try:
             if self._fd:
@@ -168,7 +168,7 @@ class Group:
 
     types = dict(int=int, float=float, str=lambda x: x.decode())
 
-    def __init__(self, by: Optional[str] = None, dtype: Optional[str] = None):
+    def __init__(self, by: Optional[str] = None, dtype: Optional[str] = None) -> None:
         """Initialize the Group
 
         Args:
@@ -208,7 +208,7 @@ class Group:
             return NotImplemented
         return self.by == other.by and self.cast == other.cast
 
-    def validate(self, variables: AbstractSet[str]):
+    def validate(self, variables: AbstractSet[str]) -> None:
         """Ensure that the Group variables are correctly specified
 
         Args:
@@ -233,7 +233,7 @@ class Group:
 class Buffer:
     """A buffer that collects extracted variables by group, up to a packing limit"""
 
-    def __init__(self, pack_length: int, group_by: Optional[str] = None):
+    def __init__(self, pack_length: int, group_by: Optional[str] = None) -> None:
         """Initialize the Buffer
 
         Args:
@@ -244,7 +244,7 @@ class Buffer:
         self.group_by = group_by
         self._buf = dict()
 
-    def put(self, extracted: Dict[str, Any]):
+    def put(self, extracted: Dict[str, Any]) -> None:
         """Collect the data separately for each of the groups, up to a packing limit
 
         Args:
@@ -288,7 +288,7 @@ class Buffer:
             if timestamps and len(timestamps) == self.pack_length:
                 yield group_value, buf
 
-    def clear(self, group_value: Any):
+    def clear(self, group_value: Any) -> None:
         """Reset the in-memory buffer for a particular group
 
         Args:
@@ -307,7 +307,7 @@ class Parser:
         group: Group,
         pack_length: int,
         dest: Union[str, Path],
-    ):
+    ) -> None:
         """Initialize the parser
 
         Args:
@@ -367,7 +367,7 @@ class Parser:
 
         return extracted
 
-    def write(self, extracted: Dict[str, Any]):
+    def write(self, extracted: Dict[str, Any]) -> None:
         """Write the extracted variables to an internal buffer, which is saved to disk
         when pack_length is reached.
 
@@ -414,7 +414,9 @@ class Parser:
                 self._buffer.clear(group_value)
 
 
-def listen_device(queue: Queue, host: str, port: int, timeout: Optional[float] = None):
+def listen_device(
+    queue: Queue, host: str, port: int, timeout: Optional[float] = None
+) -> None:
     """Receive messages from the device over a TCP socket and queue them
     for parallel processing.
 
@@ -459,7 +461,7 @@ def listen_device(queue: Queue, host: str, port: int, timeout: Optional[float] =
 
 def process_data(
     queue: Queue, regex: bytes, group: Group, pack_length: int, dest: Union[str, Path]
-):
+) -> None:
     """Take messages from the queue, parse them and periodically save to disk.
 
     Args:
@@ -613,7 +615,9 @@ def validate_regex(regex: bytes) -> AbstractSet[str]:
     return pattern.groupindex.keys()
 
 
-def configure_logging(level: Optional[str] = "INFO", file: Optional[str] = None):
+def configure_logging(
+    level: Optional[str] = "INFO", file: Optional[str] = None
+) -> None:
     """Setup rotated logging to the file and the console
 
     Args:
@@ -659,7 +663,7 @@ def configure_logging(level: Optional[str] = "INFO", file: Optional[str] = None)
     logging.config.dictConfig(logging_conf)
 
 
-def echo(host: str, port: int):
+def echo(host: str, port: int) -> None:
     """Connect to the device and print incoming messages to stdout
 
     Args:
@@ -684,7 +688,7 @@ def echo(host: str, port: int):
                 sys.stdout.buffer.flush()
 
 
-def parse(conf: argparse.Namespace):
+def parse(conf: argparse.Namespace) -> None:
     """Launch long-running processes to listen, parse, and save incoming data
 
     Args:
@@ -727,7 +731,7 @@ def parse(conf: argparse.Namespace):
     queue.join_thread()
 
 
-def main():
+def main() -> None:
     # Parse the command-line arguments
     args = read_cmdline()
     # Log to stderr only, until the config file has been loaded
