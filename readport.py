@@ -18,10 +18,12 @@ except ImportError:
 from ast import literal_eval
 from collections import defaultdict, namedtuple
 from datetime import datetime
+from ipaddress import ip_address
 from multiprocessing import Process, Queue, Event
 from pathlib import Path
 from queue import Empty, Full
 from typing import AbstractSet, Any, Dict, Iterator, Optional, TextIO, Tuple, Union
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -491,14 +493,29 @@ def read_cmdline() -> argparse.Namespace:
     Returns:
         args: an object with the values of the command-line options
     """
-    parser = argparse.ArgumentParser(description="Read and save device data.")
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Read device data over a TCP socket connection.",
+        epilog="""Examples of usage:
+  Parse and save device data to NumPy archives:
+    $ ./readport.py --config readport_4001.conf
+    
+  Save binary messages from the device to a file. Useful when the format isn't yet known:
+    $ ./readport.py --echo 192.168.192.48:4001 > data.bin
+""",
+    )
     # For better clarity, add a required block in the description
-    required = parser.add_argument_group("required arguments")
-    required.add_argument(
+    required = parser.add_argument_group("required arguments (one of)")
+    either = required.add_mutually_exclusive_group(required=True)
+    either.add_argument(
         "-c",
         "--config",
         help="path to the configuration file",
-        required=True,
+    )
+    either.add_argument(
+        "--echo",
+        metavar="IP:PORT",
+        help="print messages coming from a specified address to stdout",
     )
     parser.add_argument(
         "--debug",
@@ -621,27 +638,47 @@ def configure_logging(level: str, file: str):
     root.addHandler(console)
 
 
-def main():
-    # Parse the command-line arguments and load the config file
-    args = read_cmdline()
-    try:
-        with open(args.config) as f:
-            conf = load_config(f)
-    except Exception as e:
-        print(f"Failed to load configuration: {e}")
-        sys.exit(1)
+def echo(host: str, port: int):
+    """Connect to the device and print incoming messages to stdout
 
+    Args:
+        host: IP address of the device
+        port: integer port number to listen to
+    """
+    with TCPClient(host, port) as client:
+        # Establish socket connection to the device
+        client.connect()
+
+        while True:
+            try:
+                # Read device data line by line
+                data = client.readline()
+            except Exception as e:
+                logging.error(e)
+                return
+            else:
+                # Ideally, the user will redirect stdout to a file to record binary
+                # messages and avoid corrupting the terminal
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+
+
+def parse(conf: argparse.Namespace, debug: bool):
+    """Launch long-running processes to listen, parse, and save incoming data
+
+    Args:
+        conf: all of the loaded config file settings
+        debug: if true, set the log level to DEBUG, else use the setting from
+            the config file
+    """
     # Set up logging to the console and the log-files
-    log_level = "DEBUG" if args.debug else conf.log_level
+    log_level = "DEBUG" if debug else conf.log_level
     configure_logging(level=log_level, file=conf.log_file)
     logging.info(f"Logging to the file '{conf.log_file}'")
-
     # Ignore Ctrl-C in subprocesses
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-
     # Create a communication queue between processes
     queue = Queue()
-
     # Launch the subprocesses
     p1 = Process(
         target=listen_device,
@@ -661,16 +698,49 @@ def main():
     processes = [p1, p2]
     p1.start()
     p2.start()
-
     # Gracefully handle Ctrl-C and the TERM signal
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-
     # Wait for the subprocesses to complete
     p1.join()
     p2.join()
     queue.close()
     queue.join_thread()
+
+
+def main():
+    # Parse the command-line arguments
+    args = read_cmdline()
+
+    if args.echo:
+        # Obtain the IP and port number of the device
+        try:
+            parsed = urlparse(f"tcp://{args.echo}")
+            host = str(ip_address(parsed.hostname))
+            port = parsed.port
+            assert host, "please provide a valid IP address"
+            assert port, "please provide a valid port number"
+        except (ValueError, AssertionError) as e:
+            print(f"Failed to parse {args.echo!r} as IP:PORT: {e}")
+            sys.exit(1)
+
+        try:
+            # Connect to the device and print incoming messages to stdout
+            echo(host, port)
+        except KeyboardInterrupt:
+            pass
+
+    else:
+        # Load the config file
+        try:
+            with open(args.config) as f:
+                conf = load_config(f)
+        except Exception as e:
+            print(f"Failed to load configuration: {e}")
+            sys.exit(1)
+
+        # Launch long-running processes to listen, parse, and save incoming data
+        parse(conf, args.debug)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from typing import List
 
 import pytest
-from readport import shutdown, listen_device
+from readport import echo, listen_device, shutdown
 
 HOST, PORT = "127.0.0.1", 9999
 
@@ -240,3 +240,19 @@ def test_listen_device_timeout(server, store, caplog):
     # Make sure that there was exactly one timeout in the logs
     timeout_logs = [rec.message for rec in caplog.records if "timed out" in rec.message]
     assert len(timeout_logs) == 1
+
+
+def test_echo(server, capsysbinary):
+    """Verify that echo is working properly"""
+    instructions = [
+        b"message 1\n",
+        b"message 2\n",
+        b"<shutdown>",
+    ]
+    expected = b"message 1\nmessage 2\n"
+
+    server.send(instructions)
+    echo(HOST, PORT)  # will return when connection is closed, does not reconnect
+
+    captured = capsysbinary.readouterr()
+    assert captured.out == expected
