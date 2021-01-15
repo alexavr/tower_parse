@@ -3,7 +3,7 @@
 import argparse
 import configparser
 import logging
-import logging.handlers
+import logging.config
 import signal
 import socket
 import sys
@@ -172,8 +172,8 @@ class Group:
         """Initialize the Group
 
         Args:
-            by: the name of the grouping variable
-            dtype: the data type of the grouping variable
+            by: the name of the grouping variable (default: None)
+            dtype: the data type of the grouping variable (default: None)
         """
         self.by = by
         self.cast = self.types.get(dtype)
@@ -356,7 +356,7 @@ class Parser:
                 # a connection to be incomplete quite often.
                 logging.debug(f"Possibly incomplete first message: {item.data}")
             else:
-                logging.error(f"Cannot parse a complete message: {item.data}")
+                logging.error(f"Cannot parse the message: {item.data}")
             raise ParseError(e)
         except Exception as e:
             logging.error(e)
@@ -613,29 +613,50 @@ def validate_regex(regex: bytes) -> AbstractSet[str]:
     return pattern.groupindex.keys()
 
 
-def configure_logging(level: str, file: str):
+def configure_logging(level: Optional[str] = "INFO", file: Optional[str] = None):
     """Setup rotated logging to the file and the console
 
     Args:
-        level: the threshold for the logging system ("INFO", "DEBUG", etc.)
-        file: the filename of the log to write to
+        level: the threshold for the logging system (default: "INFO")
+        file: the filename of the log to write to (default: None)
     """
-    root = logging.getLogger()
-    root.setLevel(level)
+    logging_conf = {
+        "version": 1,
+        "formatters": {
+            "timestamped": {
+                "class": "logging.Formatter",
+                "format": "%(asctime)s [%(levelname)s]: %(message)s",
+            },
+            "concise": {
+                "class": "logging.Formatter",
+                "format": "%(levelname)-5s %(message)s",
+            },
+        },
+        "handlers": {
+            # Setup a rotating log file. At most 5 backup copies are kept, <10 MB each.
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "filename": file,
+                "mode": "a",
+                "maxBytes": int(1e7),
+                "backupCount": 5,
+                "formatter": "timestamped",
+            },
+            # Setup simultaneous logging to the console (stderr)
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "concise",
+            },
+        },
+        "root": {
+            "level": level,
+            "handlers": ["console", "file"] if file else ["console"],
+        },
+    }
+    if not file:
+        del logging_conf["handlers"]["file"]
 
-    # Setup a rotating log file. At most 5 backup copies are kept, less than 10 MB each.
-    handler = logging.handlers.RotatingFileHandler(
-        file, mode="a", maxBytes=int(1e7), backupCount=5
-    )
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s")
-    handler.setFormatter(formatter)
-    root.addHandler(handler)
-
-    # Setup simultaneous logging to the console
-    console = logging.StreamHandler()
-    formatter = logging.Formatter("%(levelname)-5s %(message)s")
-    console.setFormatter(formatter)
-    root.addHandler(console)
+    logging.config.dictConfig(logging_conf)
 
 
 def echo(host: str, port: int):
@@ -663,22 +684,18 @@ def echo(host: str, port: int):
                 sys.stdout.buffer.flush()
 
 
-def parse(conf: argparse.Namespace, debug: bool):
+def parse(conf: argparse.Namespace):
     """Launch long-running processes to listen, parse, and save incoming data
 
     Args:
         conf: all of the loaded config file settings
-        debug: if true, set the log level to DEBUG, else use the setting from
-            the config file
     """
-    # Set up logging to the console and the log-files
-    log_level = "DEBUG" if debug else conf.log_level
-    configure_logging(level=log_level, file=conf.log_file)
-    logging.info(f"Logging to the file '{conf.log_file}'")
     # Ignore Ctrl-C in subprocesses
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     # Create a communication queue between processes
     queue = Queue()
+
     # Launch the subprocesses
     p1 = Process(
         target=listen_device,
@@ -698,9 +715,11 @@ def parse(conf: argparse.Namespace, debug: bool):
     processes = [p1, p2]
     p1.start()
     p2.start()
+
     # Gracefully handle Ctrl-C and the TERM signal
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
     # Wait for the subprocesses to complete
     p1.join()
     p2.join()
@@ -711,6 +730,8 @@ def parse(conf: argparse.Namespace, debug: bool):
 def main():
     # Parse the command-line arguments
     args = read_cmdline()
+    # Log to stderr only, until the config file has been loaded
+    configure_logging()
 
     if args.echo:
         # Obtain the IP and port number of the device
@@ -721,7 +742,7 @@ def main():
             assert host, "please provide a valid IP address"
             assert port, "please provide a valid port number"
         except (ValueError, AssertionError) as e:
-            print(f"Failed to parse {args.echo!r} as IP:PORT: {e}")
+            logging.error(f"Failed to parse {args.echo!r} as IP:PORT: {e}")
             sys.exit(1)
 
         try:
@@ -736,11 +757,16 @@ def main():
             with open(args.config) as f:
                 conf = load_config(f)
         except Exception as e:
-            print(f"Failed to load configuration: {e}")
+            logging.error(f"Failed to load configuration: {e}")
             sys.exit(1)
 
+        # Set up logging to the console and the log-file
+        log_level = "DEBUG" if args.debug else conf.log_level
+        configure_logging(level=log_level, file=conf.log_file)
+        logging.info(f"Logging to the file '{conf.log_file}'")
+
         # Launch long-running processes to listen, parse, and save incoming data
-        parse(conf, args.debug)
+        parse(conf)
 
 
 if __name__ == "__main__":

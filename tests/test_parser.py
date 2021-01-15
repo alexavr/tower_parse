@@ -54,7 +54,7 @@ def test_parser_extract_incomplete(caplog):
     log = [
         rec.message
         for rec in caplog.records
-        if "Cannot parse a complete message" in rec.message
+        if "Cannot parse the message" in rec.message
     ]
     assert len(log) == 1
 
