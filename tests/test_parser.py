@@ -256,7 +256,7 @@ def test_parser_write_group_by(tmp_path):
         dict(level=2, rh=2.35, temp=11.97, time=time.time()),
     ]
     levels = {d["level"] for d in data}
-    all_vars = {key for d in data for key in d.keys()}
+    saved_vars = {key for d in data for key in d.keys() if key != "level"}
     pack_length = 2
 
     # Use microseconds and a unique file identifier
@@ -289,7 +289,7 @@ def test_parser_write_group_by(tmp_path):
     for level in levels:
         file = [f for f in files if "Test{}".format(level) in f][0]
         with np.load(file) as data:
-            for var in all_vars:
+            for var in saved_vars:
                 expected = np.array(buffers[level][var])
                 assert np.array_equal(data[var], expected)
                 assert data[var].dtype == expected.dtype
