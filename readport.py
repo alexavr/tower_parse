@@ -397,6 +397,10 @@ class Parser:
                 )
                 target.parent.mkdir(parents=True, exist_ok=True)
 
+                # Do not save the values of the group variable, record it as part of
+                # the filename only
+                vectors.pop(self.group.by, None)
+
                 # Save the variables to a temporary file
                 tmp_file = target.with_suffix(".tmp")
                 with tmp_file.open(mode="wb") as f:
