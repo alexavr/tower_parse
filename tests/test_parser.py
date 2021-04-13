@@ -54,7 +54,7 @@ def test_parser_extract_incomplete(caplog):
     log = [
         rec.message
         for rec in caplog.records
-        if "Cannot parse a complete message" in rec.message
+        if "Cannot parse the message" in rec.message
     ]
     assert len(log) == 1
 
@@ -287,7 +287,7 @@ def test_parser_write_group_by(tmp_path):
 
     assert len(files) == len(levels)
     for level in levels:
-        file = [f for f in files if "Test{}".format(level) in f][0]
+        file = [f for f in files if f"Test{level}" in f][0]
         with np.load(file) as data:
             for var in saved_vars:
                 expected = np.array(buffers[level][var])

@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from typing import List
 
 import pytest
-from readport import shutdown, listen_device
+from readport import echo, listen_device, shutdown
 
 HOST, PORT = "127.0.0.1", 9999
 
@@ -16,7 +16,7 @@ HOST, PORT = "127.0.0.1", 9999
 def humanize(address):
     """Format the network address tuple (host and port) as a string"""
     host, port = address
-    return "{}:{}".format(host, port)
+    return f"{host}:{port}"
 
 
 class TCPServer(ExitStack):
@@ -41,7 +41,7 @@ class TCPServer(ExitStack):
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((self.host, self.port))
         self.sock.listen()
-        self.log.debug("Listening on {}".format(humanize(self.sock.getsockname())))
+        self.log.debug(f"Listening on {humanize(self.sock.getsockname())}")
         return self
 
     def close(self):
@@ -64,7 +64,7 @@ class TCPServer(ExitStack):
         while not shutdown.is_set():
             self.log.debug("Connecting")
             conn, addr = self.sock.accept()
-            self.log.debug("Connected to {}".format(humanize(addr)))
+            self.log.debug(f"Connected to {humanize(addr)}")
 
             with conn:
                 while True:
@@ -76,7 +76,7 @@ class TCPServer(ExitStack):
                     m = re.match(br"<timeout (\d+[.]?\d*)>", msg)
                     if m:
                         duration = float(m.group(1))
-                        self.log.debug("Sleeping for {} second(s)".format(duration))
+                        self.log.debug(f"Sleeping for {duration} second(s)")
                         time.sleep(duration)
                         break
                     elif msg == b"<disconnect>":
@@ -89,7 +89,7 @@ class TCPServer(ExitStack):
                         shutdown.set()
                         break
                     else:
-                        self.log.debug("Sending {!r}".format(msg))
+                        self.log.debug(f"Sending {msg!r}")
                         try:
                             conn.sendall(msg)
                         except Exception as e:
@@ -165,7 +165,7 @@ def test_connection(server):
             try:
                 sock.settimeout(5)
                 sock.connect((HOST, PORT))
-                log.debug("Connected to {}".format(humanize(sock.getpeername())))
+                log.debug(f"Connected to {humanize(sock.getpeername())}")
             except (OSError, ConnectionRefusedError) as e:
                 log.error(e)
                 break
@@ -179,11 +179,11 @@ def test_connection(server):
                     log.error(e)
                     break
                 else:
-                    log.debug("Received {!r}".format(data))
+                    log.debug(f"Received {data!r}")
                     # The messages may arrive bundled together. Split and reformat them.
                     received.extend([b"%s\n" % b for b in data.strip().split(b"\n")])
 
-    log.debug("Received: {}".format(received))
+    log.debug(f"Received: {received}")
     assert received == expected
 
 
@@ -213,7 +213,7 @@ def test_listen_device_readline(server, store):
     server.send(outgoing)
     listen_device(store.queue, HOST, PORT, timeout=None)
 
-    logging.debug("Received: {}".format(store.data))
+    logging.debug(f"Received: {store.data}")
     assert store.data == expected
     assert store.fresh_connection == expected_fresh_conn
     # Ensure that the timestamps are monotonically increasing
@@ -235,8 +235,24 @@ def test_listen_device_timeout(server, store, caplog):
     server.send(instructions)
     listen_device(store.queue, HOST, PORT, timeout=0.75)
 
-    logging.debug("Received: {}".format(store.data))
+    logging.debug(f"Received: {store.data}")
     assert store.data == expected
     # Make sure that there was exactly one timeout in the logs
     timeout_logs = [rec.message for rec in caplog.records if "timed out" in rec.message]
     assert len(timeout_logs) == 1
+
+
+def test_echo(server, capsysbinary):
+    """Verify that echo is working properly"""
+    instructions = [
+        b"message 1\n",
+        b"message 2\n",
+        b"<shutdown>",
+    ]
+    expected = b"message 1\nmessage 2\n"
+
+    server.send(instructions)
+    echo(HOST, PORT)  # will return when connection is closed, does not reconnect
+
+    captured = capsysbinary.readouterr()
+    assert captured.out == expected

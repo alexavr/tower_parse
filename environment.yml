@@ -1,0 +1,5 @@
+name: tower_client_test
+dependencies:
+  - python>=3.6
+  - numpy
+#  - regex  # optional, enables advanced regex

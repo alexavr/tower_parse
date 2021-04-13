@@ -1,9 +1,9 @@
-#!/usr/bin/env python3.5
+#!/usr/bin/env python
 
 import argparse
 import configparser
 import logging
-import logging.handlers
+import logging.config
 import signal
 import socket
 import sys
@@ -18,10 +18,12 @@ except ImportError:
 from ast import literal_eval
 from collections import defaultdict, namedtuple
 from datetime import datetime
+from ipaddress import ip_address
 from multiprocessing import Process, Queue, Event
 from pathlib import Path
 from queue import Empty, Full
-from typing import AbstractSet, Any, Dict, Optional, TextIO, Tuple, Union
+from typing import AbstractSet, Any, Dict, Iterator, Optional, TextIO, Tuple, Union
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -43,7 +45,7 @@ class ParseError(Exception):
     """An exception raised when the parser fails to process data or save it to disk"""
 
 
-def signal_handler(sig, frame):  # noqa
+def signal_handler(sig, frame) -> None:  # noqa
     """A handler for the Ctrl-C event and the TERM signal."""
     if shutdown.is_set() or sig == signal.SIGTERM:
         # Terminate immediately
@@ -62,7 +64,7 @@ def signal_handler(sig, frame):  # noqa
 class TCPClient:
     """A TCP socket connection that reads newline-delimited messages."""
 
-    def __init__(self, host: str, port: int, timeout: Optional[float] = None):
+    def __init__(self, host: str, port: int, timeout: Optional[float] = None) -> None:
         """Initialize the socket connection class.
 
         Args:
@@ -90,14 +92,12 @@ class TCPClient:
         """
         return self._fresh
 
-    def connect(self):
+    def connect(self) -> None:
         """Establish socket connection, retrying if necessary"""
         # Close any previously open socket-associated file descriptors
         self.close()
 
-        logging.info(
-            "Attempting to connect to socket at {}:{}...".format(self.host, self.port)
-        )
+        logging.info(f"Attempting to connect to socket at {self.host}:{self.port}...")
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.settimeout(self.timeout)
 
@@ -108,9 +108,8 @@ class TCPClient:
                 time.sleep(1)
             else:
                 logging.info(
-                    "Connected to {}:{}. Ready to receive device data...".format(
-                        self.host, self.port
-                    )
+                    f"Connected to {self.host}:{self.port}. "
+                    f"Ready to receive device data..."
                 )
                 # Obtain a file descriptor capable of reading line by line
                 self._fd = self._sock.makefile(mode="rb")
@@ -140,9 +139,7 @@ class TCPClient:
             # Make the timeout message more elaborate instead of the default "timed out"
             if isinstance(e, socket.timeout):
                 e = OSError(
-                    "Read timed out. No messages received in {} seconds.".format(
-                        self.timeout
-                    )
+                    f"Read timed out. No messages received in {self.timeout} seconds."
                 )
             raise e
 
@@ -151,7 +148,7 @@ class TCPClient:
 
         return data
 
-    def close(self):
+    def close(self) -> None:
         """Close all socket-associated handles."""
         try:
             if self._fd:
@@ -171,12 +168,12 @@ class Group:
 
     types = dict(int=int, float=float, str=lambda x: x.decode())
 
-    def __init__(self, by: Optional[str] = None, dtype: Optional[str] = None):
+    def __init__(self, by: Optional[str] = None, dtype: Optional[str] = None) -> None:
         """Initialize the Group
 
         Args:
-            by: the name of the grouping variable
-            dtype: the data type of the grouping variable
+            by: the name of the grouping variable (default: None)
+            dtype: the data type of the grouping variable (default: None)
         """
         self.by = by
         self.cast = self.types.get(dtype)
@@ -211,7 +208,7 @@ class Group:
             return NotImplemented
         return self.by == other.by and self.cast == other.cast
 
-    def validate(self, variables: AbstractSet[str]):
+    def validate(self, variables: AbstractSet[str]) -> None:
         """Ensure that the Group variables are correctly specified
 
         Args:
@@ -224,20 +221,19 @@ class Group:
         if self.by is not None:
             if self.by not in variables:
                 raise ConfigurationError(
-                    "group_by variable must by one of: {}".format(", ".join(variables))
+                    f"group_by variable must by one of: {', '.join(variables)}"
                 )
             if self.cast is None:
                 raise ConfigurationError(
-                    "group_by type must be set to one of: {}".format(
-                        ", ".join(self.types.keys())
-                    )
+                    f"group_by type must be set to one of: "
+                    f"{', '.join(self.types.keys())}"
                 )
 
 
 class Buffer:
     """A buffer that collects extracted variables by group, up to a packing limit"""
 
-    def __init__(self, pack_length: int, group_by: Optional[str] = None):
+    def __init__(self, pack_length: int, group_by: Optional[str] = None) -> None:
         """Initialize the Buffer
 
         Args:
@@ -248,7 +244,7 @@ class Buffer:
         self.group_by = group_by
         self._buf = dict()
 
-    def put(self, extracted: Dict[str, Any]):
+    def put(self, extracted: Dict[str, Any]) -> None:
         """Collect the data separately for each of the groups, up to a packing limit
 
         Args:
@@ -261,8 +257,9 @@ class Buffer:
         buf = self._buf.get(group_value)
         if buf:
             assert extracted.keys() == buf.keys(), (
-                "Cannot buffer the supplied variables. Expected {}, but got {}"
-            ).format(sorted(buf.keys()), sorted(extracted.keys()))
+                f"Cannot buffer the supplied variables. "
+                f"Expected {sorted(buf.keys())}, but got {sorted(extracted.keys())}"
+            )
 
             # Checking the length of "time" doesn't alter the buffer, since the variable
             # must already be in it:
@@ -277,7 +274,7 @@ class Buffer:
         for var, value in extracted.items():
             buf[var].append(value)
 
-    def full(self) -> Tuple[Any, Dict[str, Any]]:
+    def full(self) -> Iterator[Tuple[Any, Dict[str, Any]]]:
         """Iterate over the groups that have reached the packing limit
 
         Yields:
@@ -291,7 +288,7 @@ class Buffer:
             if timestamps and len(timestamps) == self.pack_length:
                 yield group_value, buf
 
-    def clear(self, group_value: Any):
+    def clear(self, group_value: Any) -> None:
         """Reset the in-memory buffer for a particular group
 
         Args:
@@ -310,7 +307,7 @@ class Parser:
         group: Group,
         pack_length: int,
         dest: Union[str, Path],
-    ):
+    ) -> None:
         """Initialize the parser
 
         Args:
@@ -357,20 +354,20 @@ class Parser:
             if item.fresh_connection:
                 # We expect the very first message received upon establishing
                 # a connection to be incomplete quite often.
-                logging.debug("Possibly incomplete first message: {}".format(item.data))
+                logging.debug(f"Possibly incomplete first message: {item.data}")
             else:
-                logging.error("Cannot parse a complete message: {}".format(item.data))
+                logging.error(f"Cannot parse the message: {item.data}")
             raise ParseError(e)
         except Exception as e:
             logging.error(e)
             raise ParseError(e)
         else:
             extracted["time"] = item.timestamp
-            logging.debug("Got {}".format(extracted))
+            logging.debug(f"Got {extracted}")
 
         return extracted
 
-    def write(self, extracted: Dict[str, Any]):
+    def write(self, extracted: Dict[str, Any]) -> None:
         """Write the extracted variables to an internal buffer, which is saved to disk
         when pack_length is reached.
 
@@ -410,19 +407,20 @@ class Parser:
                 tmp_file.rename(target)
             except Exception as e:
                 logging.error(
-                    "Saving failed: {}. {:,} data points will be lost.".format(
-                        e, self._buffer.pack_length
-                    )
+                    f"Saving failed: {e}. "
+                    f"{self._buffer.pack_length:,} data points will be lost."
                 )
                 raise ParseError(e)
             else:
-                logging.info("Data saved to '{}'".format(target))
+                logging.info(f"Data saved to '{target}'")
             finally:
                 # Reset the in-memory storage
                 self._buffer.clear(group_value)
 
 
-def listen_device(queue: Queue, host: str, port: int, timeout: Optional[float] = None):
+def listen_device(
+    queue: Queue, host: str, port: int, timeout: Optional[float] = None
+) -> None:
     """Receive messages from the device over a TCP socket and queue them
     for parallel processing.
 
@@ -467,7 +465,7 @@ def listen_device(queue: Queue, host: str, port: int, timeout: Optional[float] =
 
 def process_data(
     queue: Queue, regex: bytes, group: Group, pack_length: int, dest: Union[str, Path]
-):
+) -> None:
     """Take messages from the queue, parse them and periodically save to disk.
 
     Args:
@@ -501,14 +499,29 @@ def read_cmdline() -> argparse.Namespace:
     Returns:
         args: an object with the values of the command-line options
     """
-    parser = argparse.ArgumentParser(description="Read and save device data.")
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Read device data over a TCP socket connection.",
+        epilog="""Examples of usage:
+  Parse and save device data to NumPy archives:
+    $ ./readport.py --config readport_4001.conf
+    
+  Save binary messages from the device to a file. Useful when the format isn't yet known:
+    $ ./readport.py --echo 192.168.192.48:4001 > data.bin
+""",
+    )
     # For better clarity, add a required block in the description
-    required = parser.add_argument_group("required arguments")
-    required.add_argument(
+    required = parser.add_argument_group("required arguments (one of)")
+    either = required.add_mutually_exclusive_group(required=True)
+    either.add_argument(
         "-c",
         "--config",
         help="path to the configuration file",
-        required=True,
+    )
+    either.add_argument(
+        "--echo",
+        metavar="IP:PORT",
+        help="print messages coming from a specified address to stdout",
     )
     parser.add_argument(
         "--debug",
@@ -591,7 +604,7 @@ def validate_regex(regex: bytes) -> AbstractSet[str]:
                 e.args[0] + "\nTo support such advanced regex functionality, "
                 "please `pip install regex`.",
             ) + e.args[1:]
-        raise ConfigurationError("regex: {}".format(e))
+        raise ConfigurationError(f"regex: {e}")
 
     if pattern.groups != len(pattern.groupindex):
         raise ConfigurationError("all of the regex capture groups must be named")
@@ -606,46 +619,85 @@ def validate_regex(regex: bytes) -> AbstractSet[str]:
     return pattern.groupindex.keys()
 
 
-def configure_logging(level: str, file: str):
+def configure_logging(
+    level: Optional[str] = "INFO", file: Optional[str] = None
+) -> None:
     """Setup rotated logging to the file and the console
 
     Args:
-        level: the threshold for the logging system ("INFO", "DEBUG", etc.)
-        file: the filename of the log to write to
+        level: the threshold for the logging system (default: "INFO")
+        file: the filename of the log to write to (default: None)
     """
-    root = logging.getLogger()
-    root.setLevel(level)
+    logging_conf = {
+        "version": 1,
+        "formatters": {
+            "timestamped": {
+                "class": "logging.Formatter",
+                "format": "%(asctime)s [%(levelname)s]: %(message)s",
+            },
+            "concise": {
+                "class": "logging.Formatter",
+                "format": "%(levelname)-5s %(message)s",
+            },
+        },
+        "handlers": {
+            # Setup a rotating log file. At most 5 backup copies are kept, <10 MB each.
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "filename": file,
+                "mode": "a",
+                "maxBytes": int(1e7),
+                "backupCount": 5,
+                "formatter": "timestamped",
+            },
+            # Setup simultaneous logging to the console (stderr)
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "concise",
+            },
+        },
+        "root": {
+            "level": level,
+            "handlers": ["console", "file"] if file else ["console"],
+        },
+    }
+    if not file:
+        del logging_conf["handlers"]["file"]
 
-    # Setup a rotating log file. At most 5 backup copies are kept, less than 10 MB each.
-    handler = logging.handlers.RotatingFileHandler(
-        file, mode="a", maxBytes=int(1e7), backupCount=5
-    )
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s")
-    handler.setFormatter(formatter)
-    root.addHandler(handler)
-
-    # Setup simultaneous logging to the console
-    console = logging.StreamHandler()
-    formatter = logging.Formatter("%(levelname)-5s %(message)s")
-    console.setFormatter(formatter)
-    root.addHandler(console)
+    logging.config.dictConfig(logging_conf)
 
 
-def main():
-    # Parse the command-line arguments and load the config file
-    args = read_cmdline()
-    try:
-        with open(args.config) as f:
-            conf = load_config(f)
-    except Exception as e:
-        print("Failed to load configuration: {}".format(e))
-        sys.exit(1)
+def echo(host: str, port: int) -> None:
+    """Connect to the device and print incoming messages to stdout
 
-    # Set up logging to the console and the log-files
-    log_level = "DEBUG" if args.debug else conf.log_level
-    configure_logging(level=log_level, file=conf.log_file)
-    logging.info("Logging to the file '{}'".format(conf.log_file))
+    Args:
+        host: IP address of the device
+        port: integer port number to listen to
+    """
+    with TCPClient(host, port) as client:
+        # Establish socket connection to the device
+        client.connect()
 
+        while True:
+            try:
+                # Read device data line by line
+                data = client.readline()
+            except Exception as e:
+                logging.error(e)
+                return
+            else:
+                # Ideally, the user will redirect stdout to a file to record binary
+                # messages and avoid corrupting the terminal
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+
+
+def parse(conf: argparse.Namespace) -> None:
+    """Launch long-running processes to listen, parse, and save incoming data
+
+    Args:
+        conf: all of the loaded config file settings
+    """
     # Ignore Ctrl-C in subprocesses
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
@@ -681,6 +733,48 @@ def main():
     p2.join()
     queue.close()
     queue.join_thread()
+
+
+def main() -> None:
+    # Parse the command-line arguments
+    args = read_cmdline()
+    # Log to stderr only, until the config file has been loaded
+    configure_logging()
+
+    if args.echo:
+        # Obtain the IP and port number of the device
+        try:
+            parsed = urlparse(f"tcp://{args.echo}")
+            host = str(ip_address(parsed.hostname))
+            port = parsed.port
+            assert host, "please provide a valid IP address"
+            assert port, "please provide a valid port number"
+        except (ValueError, AssertionError) as e:
+            logging.error(f"Failed to parse {args.echo!r} as IP:PORT: {e}")
+            sys.exit(1)
+
+        try:
+            # Connect to the device and print incoming messages to stdout
+            echo(host, port)
+        except KeyboardInterrupt:
+            pass
+
+    else:
+        # Load the config file
+        try:
+            with open(args.config) as f:
+                conf = load_config(f)
+        except Exception as e:
+            logging.error(f"Failed to load configuration: {e}")
+            sys.exit(1)
+
+        # Set up logging to the console and the log-file
+        log_level = "DEBUG" if args.debug else conf.log_level
+        configure_logging(level=log_level, file=conf.log_file)
+        logging.info(f"Logging to the file '{conf.log_file}'")
+
+        # Launch long-running processes to listen, parse, and save incoming data
+        parse(conf)
 
 
 if __name__ == "__main__":

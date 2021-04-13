@@ -16,11 +16,11 @@ def interrupt_handler(sign, frame):  # noqa
 class Generator:
     """Generate random messages with appropriate format and sequential IDs"""
 
-    def __init__(self, broken=False):
+    def __init__(self, realistic=True):
         """Initialize the generator.
 
         Args:
-            broken: if True, send broken messages, split between sends (default: {False})
+            realistic: send realistic TCP messages, split between sends (default: {True})
         """
         # Return variable-length messages of the form:
         # b'01 RH= +000.079 %RH T= +000.095 'C ID=0000001\r\n'
@@ -29,7 +29,7 @@ class Generator:
             "{level:02d} RH= {:+0{w}.{p}f} %RH T= {:+0{w}.{p}f} 'C ID={id:07d}\r\n"
         )
         self.message_id = 0
-        self.broken = broken
+        self.realistic = realistic
         self.buffer = b""
 
     def get_data(self):
@@ -42,7 +42,7 @@ class Generator:
         )
         data = data.encode("ascii")
 
-        if self.broken:
+        if self.realistic:
             chunk_length = random.randint(1, len(data) - 1)
 
             if self.message_id == 0:
@@ -75,21 +75,27 @@ def read_cmdline():
         "-f",
         "--frequency",
         help=(
-            "Approximate number of messages per second to send (default: 20). "
+            "Approximate number of messages per second to send (default: 2). "
             "Use 0 to send at a maximum possible rate."
         ),
-        default=20,
+        default=2,
         type=float,
     )
     parser.add_argument(
-        "-b",
-        "--broken",
+        "--realistic",
+        dest="realistic",
         help=(
-            "Simulate a broken / streaming server by sending "
-            "partial or incomplete messages"
+            "Simulate a realistic TCP server by sending messages in multiple packets"
         ),
         action="store_true",
     )
+    parser.add_argument(
+        "--no-realistic",
+        dest="realistic",
+        help="Send complete messages only",
+        action="store_false",
+    )
+    parser.set_defaults(realistic=True)
     args = parser.parse_args()
     return args
 
@@ -98,7 +104,7 @@ def main():
     signal.signal(signal.SIGINT, interrupt_handler)
 
     args = read_cmdline()
-    frequency, broken = args.frequency, args.broken
+    frequency, realistic = args.frequency, args.realistic
 
     if frequency == 0:
         delay = 0
@@ -119,7 +125,7 @@ def main():
             with conn:
                 print(f"Connected by {addr[0]}:{addr[1]}")
                 print(f"Sending {freq_desc}...")
-                generator = Generator(broken)
+                generator = Generator(realistic)
                 while True:
                     data = generator.get_data()
                     try:
