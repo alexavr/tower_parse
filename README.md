@@ -1,22 +1,11 @@
-# tower_client
+# Eddy Covariance Tower: Parsing Sensor Data
 
-The repository contains a collection of scripts and settings of a small PC (currently a 32-bit ARMv7-based ASUS Tinker Board) for reading the data from several sonic anemometers, which are mounted on a meteorological tower. The scripts read and send meteorological data, plus system info, to the central server (TowerServer).
+Extract measurements from streaming meteorological devices mounted on an [eddy covariance](https://en.wikipedia.org/wiki/Eddy_covariance) tower. Upload atmospheric data and system status to the central server for batch processing.
 
-## Crontab settings:
-```bash
-*/1 * * * *  /path/to/hb_client.sh &>/dev/null
-*/30 * * * * /path/to/send_data.sh &>/dev/null
-```
-
-## File description:
-* `hb_client.sh` - reads system status (CPU temperature, RAM usage, traffic, etc.) and sends it to TowerServer.
-* `readport.py` - reads data from meteorological devices. These are connected via Ethernet on ports 4001-4004 (TCP) of a Moxa NPort server. The detailed settings of each connection are supplied through the corresponding configuration file.
-* `readport_400N.conf` - the configuration files for each device. The device names, port numbers, and the logic for parsing binary messages vary between devices.
-* `send_data.sh` -  upload the files with meteorological data to the server for post-processing.
-* `extras/fake_server.py` - a simulated server that sends messages in the appropriate format for testing `readport.py`
-* `extras/debug.conf` - a configuration file for use with `fake_server.py`
+The system is operational at the Meteorological Observatory of the Moscow State University. Current hardware platform: a 32-bit ARMv7-based ASUS Tinker Board. The main process parses binary data streams in real-time according to the rules for each device. We provide configuration files for the deployed sonic anemometers and humidity/temperature probes.
 
 ## Requirements
+
 To get started, ensure that you have Python 3.6 or later. Additional dependencies include NumPy, which on a Debian-based machine can be installed by running:
 
 ```shell
@@ -29,7 +18,14 @@ Advanced regular expressions are supported by an *optional* 3rd-party [regex](ht
 $ sudo apt install python3-regex  # optional, needed for advanced regex functionality
 ```
 
-## Usage of readport
+Alternatively, use the production conda environment:
+
+```shell
+$ conda env create -f environment.yml
+$ conda activate
+```
+
+## Usage
 
 1. **Collect data samples:** To set up a new device, first identify the format of messages sent over the TCP socket. We expect each message from the device to end with a newline. Save and inspect binary messages from the device by running (for a specific IP address and port number):
 
@@ -57,3 +53,31 @@ $ sudo apt install python3-regex  # optional, needed for advanced regex function
    ```shell
    @reboot screen -d -m /path/to/readport.py --config /path/to/readport_4005.conf
    ```
+
+## Additional crontab settings
+
+```bash
+*/1 * * * *  /path/to/hb_client.sh &>/dev/null
+*/30 * * * * /path/to/send_data.sh &>/dev/null
+```
+
+## File description
+
+* `hb_client.sh` — reads system status (CPU temperature, RAM usage, traffic, etc.) and sends it to the central server (TowerServer)
+* `send_data.sh` — upload the files with meteorological data to the server for post-processing.
+* `readport.py` — reads data from meteorological devices. These are connected via Ethernet on ports 4001-4004 (TCP) of a Moxa NPort server. The detailed settings of each connection are supplied through the corresponding configuration file.
+* `readport_400N.conf` — the configuration files for each device. The device names, port numbers, and the logic for parsing binary messages vary between devices.
+* `extras/fake_server.py` — a simulated server that sends messages in the appropriate format for ad-hoc testing of `readport.py`
+* `extras/debug.conf` — a configuration file for use with `fake_server.py`
+
+## Contributing code
+
+We welcome your code contributions! Before creating a pull request, please run the test suite:
+
+```shell
+$ conda env create -f tests/environment.yml
+$ conda activate tower_parse
+$ pytest
+```
+
+Make sure that all tests pass or are automatically skipped. We expect the code to be formatted with [black](https://github.com/psf/black). Some tests will fail if it's not.
