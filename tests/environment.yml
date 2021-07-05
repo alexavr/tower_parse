@@ -1,4 +1,4 @@
-name: tower_client
+name: tower_parse
 dependencies:
   - python>=3.6
   - numpy
@@ -6,4 +6,4 @@ dependencies:
   - pytest  # only for development & testing
   - pip
   - pip:
-      - black  # code formatting during development
+    - pytest-black  # check code formatting during development

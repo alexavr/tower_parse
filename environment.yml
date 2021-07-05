@@ -1,4 +1,4 @@
-name: tower_client
+name: tower_parse
 dependencies:
   - python>=3.6
   - numpy
