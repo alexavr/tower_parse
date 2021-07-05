@@ -1,4 +1,4 @@
-name: tower_client_test
+name: tower_client
 dependencies:
   - python>=3.6
   - numpy
