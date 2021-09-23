@@ -4,4 +4,7 @@
 SOURCE=/home/gavr/TowerMSU/data/
 DEST=naad-tower:/var/www/data/domains/tower.ocean.ru/html/flask/data/npz/
 
-rsync -a --exclude='*.tmp' --remove-source-files "$SOURCE" "$DEST"
+(
+    flock -n 9 || exit 1
+    rsync -a --exclude='*.tmp' --remove-source-files "$SOURCE" "$DEST"
+) 9>/tmp/send_data.lock
