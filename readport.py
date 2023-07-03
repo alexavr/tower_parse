@@ -340,6 +340,7 @@ class Parser:
             ValueError or UnicodeDecodeError: type conversion of extracted values fails
             re.error: for other types of regex errors
         """
+
         try:
             match = re.match(self.regex, item.data)
             # Collect the results, converting to appropriate data types and filtering out
@@ -347,7 +348,7 @@ class Parser:
             extracted = {
                 key: self._cast[key](value)
                 for key, value in match.groupdict().items()
-                if value is not None
+                if value is not None and value != b"///"
             }
         except AttributeError as e:
             # The regex pattern produced no match
